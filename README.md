@@ -19,16 +19,16 @@ Automates web form filling by reading records from a Notion database and using S
 
 1. Create and activate the virtual environment if not already present:
 
-```bash
-uv sync
-source .venv/bin/activate
-```
+    ```bash
+    uv sync
+    source .venv/bin/activate
+    ```
 
 2. Install dependencies:
 
-```bash
-uv sync
-```
+    ```bash
+    uv sync
+    ```
 
 ## Configuration
 
