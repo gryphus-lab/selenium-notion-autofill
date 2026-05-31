@@ -67,7 +67,7 @@ def main():
 
         for index, row in df.iterrows():
             print(
-                f"\nProcessing {index + 1}/{len(df)}: '{row.get('Job Title', 'No Title')}' at '{row.get('Company', 'No Company')}' on '{row.get('Applied date 2', 'No Date')}'"
+                f"\nProcessing {index + 1}/{len(df)}: '{row.get('Role', 'No Role')}' at '{row.get('Company', 'No Company')}' on '{row.get('Date', 'No Date')}'"
             )
 
             driver.get(WEBSITE_URL + "/create")  # Navigate to the form page
@@ -75,12 +75,12 @@ def main():
 
             # Fill in the form fields based on FIELD_SELECTORS
             for field, selector in FIELD_SELECTORS.items():
-                value = row.get(field.capitalize(), "")
+                value = row.get(field, "")
                 if value:
                     try:
-                        element = driver.find_element(By.CSS_SELECTOR, selector)
-                        element.clear()
-                        element.send_keys(str(value))
+                        driver.find_element(By.CSS_SELECTOR, selector).send_keys(
+                            str(value)
+                        )
                         print(f"   → Filled {field} with '{value}'")
                     except Exception as e:
                         print(f"   ❌ Could not fill {field}: {e}")
