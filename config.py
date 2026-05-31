@@ -10,7 +10,7 @@ FIELD_SELECTORS = {
     "Company": "input[id*='company.name']",
     "Role": "input[id*='job-title']",
     "URL": "input[id*='online-form-url']",
-    "Type": "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.electronic-0']", "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.phone-0']"
+    "Type": "dummy",  # This will be overridden in code    
     "RAV": "label[for='alv-radio-button-0-false']",
     "Arbeitspensum": "label[for='alv-radio-button-1-FULLTIME']",
     "Status": "label[for='alv-radio-button-2-PENDING']",

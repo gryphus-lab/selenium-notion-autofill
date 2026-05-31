@@ -24,54 +24,57 @@ def extract_formatted_field(val):
         return val
 
 
-def fill_field(driver, wait, field_name, selector, value):
-    """Enhanced field filler with support for typeahead"""
+def fill_field(driver, wait, field_name, selector, value, row=None):
+    """Smart filler with special handling for Type checkboxes"""
     try:
+        if field_name == "Type" and row is not None:
+            # Special logic for Type (electronic or phone)
+            type_value = str(value).strip().lower()
+
+            if type_value == "electronic":
+                selector = "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.electronic-0']"
+            elif type_value == "phone":
+                selector = "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.phone-0']"
+            else:
+                print(f"   ⚠️ Unknown Type: {type_value}")
+                return
+
+            print(f"   → Setting Type to: {type_value}")
+
         element = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
         )
         driver.execute_script(
             "arguments[0].scrollIntoView({block: 'center'});", element
         )
-        time.sleep(0.5)
+        time.sleep(0.8)
 
-        if not value or str(value).strip() == "":
-            print(f"   ⏭️ Skipped {field_name} (empty)")
-            return
-
-        # === TYPEAHEAD / AUTOCOMPLETE ===
+        # === TYPEAHEAD ===
         if "single-typeahead" in selector or "typeahead" in selector.lower():
             element.clear()
             element.click()
-            time.sleep(1)
+            time.sleep(1.2)
             element.send_keys(str(value))
-            time.sleep(2)  # Wait for dropdown to appear
-
-            # Try to select first suggestion
+            time.sleep(2)
             try:
                 suggestion = wait.until(
                     EC.element_to_be_clickable(
-                        (
-                            By.CSS_SELECTOR,
-                            "div[role='option'], li[role='option'], .suggestion, .dropdown-item",
-                        )
+                        (By.CSS_SELECTOR, "div[role='option'], li, .suggestion")
                     )
                 )
                 suggestion.click()
-                print(f"   ✓ Typeahead selected for {field_name}: {value}")
+                print(f"   ✓ Typeahead: {field_name} → {value}")
             except Exception:
-                # Fallback: Press Enter
                 element.send_keys(Keys.ENTER)
-                print(f"   ✓ Typeahead entered (Enter) for {field_name}: {value}")
+                print(f"   ✓ Typeahead (Enter): {field_name}")
 
-        # === CHECKBOX ===
-        elif "checkbox" in selector.lower():
-            if str(value).lower() in ["electronic", "phone"]:
-                if element.is_selected():
-                    driver.execute_script("arguments[0].click();", element)
+        # === CHECKBOX (including Type) ===
+        elif "checkbox" in selector.lower() or field_name == "Type":
+            if element.is_displayed():
+                driver.execute_script("arguments[0].click();", element)
                 print(f"   ✓ Checked {field_name}")
             else:
-                print(f"   ⏭️ Skipped checkbox {field_name}")
+                print(f"   ⚠️ Checkbox not visible: {field_name}")
 
         # === RADIO ===
         elif "radio" in selector.lower():
@@ -90,7 +93,6 @@ def fill_field(driver, wait, field_name, selector, value):
 
 
 def main():
-    # Load Notion data
     notion = NotionHelper(NOTION_API_KEY)
     df = notion.get_database_data(DATABASE_ID)
 
@@ -103,15 +105,13 @@ def main():
     df["Arbeitspensum"] = "false"
     df["Status"] = "false"
     df["PLZ"] = "8001"
-
-    df = df.head(1)  # Remove this when ready for full run
+    
+    df = df.head(1)  # Remove this line later
 
     for column in df.columns:
         print(f"{column}: {df[column].iloc[0]}")
 
     print(f"✅ Loaded {len(df)} records from Notion")
-
-    # Browser setup
     options = Options()
     options.add_argument("--start-maximized")
 
@@ -129,8 +129,8 @@ def main():
             print("✅ Session restored!")
         else:
             driver.get(WEBSITE_URL)
-            print("Please login manually with AGOV...")
-            input("Press Enter AFTER login...")
+            print("Please login manually...")
+            input("Press Enter AFTER successful login...")
             save_cookies(driver)
 
         print("\n🚀 Starting automation...")
@@ -139,11 +139,11 @@ def main():
             print(f"\nProcessing {index + 1}/{len(df)}: {row.get('Role', 'N/A')}")
 
             driver.get(WEBSITE_URL + "/create")
-            time.sleep(5)  # Important: wait for form to fully load
+            time.sleep(5)
 
             for field, selector in FIELD_SELECTORS.items():
                 value = row.get(field)
-                fill_field(driver, wait, field, selector, value)
+                fill_field(driver, wait, field, selector, value, row=row)
 
             print("   → Record processed")
 
