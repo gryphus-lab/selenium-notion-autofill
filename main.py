@@ -7,6 +7,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import ast
@@ -16,7 +17,7 @@ from utils.notion_helper import NotionHelper
 from utils.session_helper import load_cookies, save_cookies
 
 
-def extract_formatted_date(val):
+def extract_formatted_field(val):
     try:
         return ast.literal_eval(str(val)).get("string")
     except (ValueError, SyntaxError, TypeError):
@@ -24,28 +25,62 @@ def extract_formatted_date(val):
 
 
 def fill_field(driver, wait, field_name, selector, value):
-    """Smart field filler that handles text, checkbox, and radio"""
+    """Enhanced field filler with support for typeahead"""
     try:
         element = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
         )
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});", element
+        )
+        time.sleep(0.5)
 
         if not value or str(value).strip() == "":
             print(f"   ⏭️ Skipped {field_name} (empty)")
             return
 
-        # Handle different field types
-        if "checkbox" in selector or "radio" in selector:
-            if isinstance(value, bool) or str(value).lower() in ["false", "0", "no"]:
-                if not element.is_selected():
+        # === TYPEAHEAD / AUTOCOMPLETE ===
+        if "single-typeahead" in selector or "typeahead" in selector.lower():
+            element.clear()
+            element.click()
+            time.sleep(1)
+            element.send_keys(str(value))
+            time.sleep(2)  # Wait for dropdown to appear
+
+            # Try to select first suggestion
+            try:
+                suggestion = wait.until(
+                    EC.element_to_be_clickable(
+                        (
+                            By.CSS_SELECTOR,
+                            "div[role='option'], li[role='option'], .suggestion, .dropdown-item",
+                        )
+                    )
+                )
+                suggestion.click()
+                print(f"   ✓ Typeahead selected for {field_name}: {value}")
+            except Exception:
+                # Fallback: Press Enter
+                element.send_keys(Keys.ENTER)
+                print(f"   ✓ Typeahead entered (Enter) for {field_name}: {value}")
+
+        # === CHECKBOX ===
+        elif "checkbox" in selector.lower():
+            if str(value).lower() in ["electronic", "phone"]:
+                if element.is_selected():
                     driver.execute_script("arguments[0].click();", element)
                 print(f"   ✓ Checked {field_name}")
             else:
-                print(f"   ⏭️ Skipped {field_name}")
+                print(f"   ⏭️ Skipped checkbox {field_name}")
 
+        # === RADIO ===
+        elif "radio" in selector.lower():
+            if value:
+                driver.execute_script("arguments[0].click();", element)
+                print(f"   ✓ Selected radio {field_name}")
+
+        # === DEFAULT TEXT INPUT ===
         else:
-            # Text input / date / URL fields
-            driver.execute_script("arguments[0].scrollIntoView();", element)
             element.clear()
             element.send_keys(str(value))
             print(f"   ✓ Filled {field_name} → {value}")
@@ -59,29 +94,31 @@ def main():
     notion = NotionHelper(NOTION_API_KEY)
     df = notion.get_database_data(DATABASE_ID)
 
-    # Process Date column if needed
     if "Date" in df.columns:
-        df["Date"] = df["Date"].apply(extract_formatted_date)
+        df["Date"] = df["Date"].apply(extract_formatted_field)
+    if "Type" in df.columns:
+        df["Type"] = df["Type"].apply(extract_formatted_field)
 
     df["RAV"] = "false"
     df["Arbeitspensum"] = "false"
     df["Status"] = "false"
-    
-    df = df.head(1)  # Remove this line when ready for all records
+    df["PLZ"] = "8001"
+
+    df = df.head(1)  # Remove this when ready for full run
 
     for column in df.columns:
         print(f"{column}: {df[column].iloc[0]}")
-    
+
     print(f"✅ Loaded {len(df)} records from Notion")
 
-    # Chrome setup
+    # Browser setup
     options = Options()
     options.add_argument("--start-maximized")
 
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()), options=options
     )
-    wait = WebDriverWait(driver, 15)
+    wait = WebDriverWait(driver, 20)
 
     try:
         print("🌐 Opening Job-Room...")
@@ -92,10 +129,9 @@ def main():
             print("✅ Session restored!")
         else:
             driver.get(WEBSITE_URL)
-            print("\n⚠️ No saved session found. Please login manually.")
-            input("Press Enter AFTER successful AGOV login...")
+            print("Please login manually with AGOV...")
+            input("Press Enter AFTER login...")
             save_cookies(driver)
-            print("✅ Session saved!")
 
         print("\n🚀 Starting automation...")
 
@@ -103,7 +139,7 @@ def main():
             print(f"\nProcessing {index + 1}/{len(df)}: {row.get('Role', 'N/A')}")
 
             driver.get(WEBSITE_URL + "/create")
-            time.sleep(4)  # Increased wait for form load
+            time.sleep(5)  # Important: wait for form to fully load
 
             for field, selector in FIELD_SELECTORS.items():
                 value = row.get(field)
