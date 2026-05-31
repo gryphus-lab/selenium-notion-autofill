@@ -1,87 +1,96 @@
 #!/usr/bin/env python3
 """Notion → Selenium Autofill Script"""
 
-#!/usr/bin/env python3
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import time
-import sys
-import pandas as pd
+import ast
 
-from config import NOTION_API_KEY, DATABASE_ID, WEBSITE_URL, FIELD_SELECTORS
+from config import FIELD_SELECTORS, NOTION_API_KEY, DATABASE_ID, WEBSITE_URL
 from utils.notion_helper import NotionHelper
+from utils.session_helper import load_cookies, save_cookies
 
 
-def fetch_database_data():
+def extract_formatted_date(val):
     try:
-        df = NotionHelper(NOTION_API_KEY).get_database_data(DATABASE_ID)
-        print(f"✅ Loaded {len(df)} records from Notion")
-        print("\nColumns available:", df.columns.tolist())
-        print("\nFirst row preview:")
-        print(df.head(1).to_string())
-        return df
-    except Exception as e:
-        print(f"❌ Notion Error: {e}")
-        sys.exit(1)
-
-
-def fill_form_fields(wait, row):
-    for field, selector in FIELD_SELECTORS.items():
-        try:
-            element = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-            )
-
-            value = row.get(field)
-            if pd.notna(value) and str(value).strip() != "":
-                if element.tag_name == "select":
-                    element.send_keys(str(value))
-                else:
-                    element.clear()
-                    element.send_keys(str(value))
-                print(f"   ✓ Filled '{field}' → {value}")
-            else:
-                print(f"   ⏭️ Skipped '{field}' (empty)")
-        except Exception as e:
-            print(f"   ⚠️ Failed to fill '{field}': {e}")
-
-
-def process_records(driver, wait, df):
-    for index, row in df.iterrows():
-        print(
-            f"\n📝 Processing record {index + 1}/{len(df)}: {row.get('Name', 'Unnamed')}"
-        )
-
-        driver.get(WEBSITE_URL)
-        time.sleep(3)  # Give page time to load fully
-        fill_form_fields(wait, row)
-
-        # TODO: Add your Submit button logic here
-        # submit_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']")))
-        # submit_btn.click()
-        # time.sleep(4)
-
-        print(f"   → Record {index + 1} completed")
+        return ast.literal_eval(str(val)).get("string")
+    except (ValueError, SyntaxError, TypeError):
+        return val
 
 
 def main():
-    print("🔄 Connecting to Notion...")
-    df = fetch_database_data()
+    # Load Notion data
+    notion = NotionHelper(NOTION_API_KEY)
+    df = notion.get_database_data(DATABASE_ID)
 
-    print("\n🌐 Starting browser...")
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
-    wait = WebDriverWait(driver, 15)
+    df["Date"] = df["Date"].apply(extract_formatted_date)
+
+    df = df.head(1)  # For testing - remove this line to process all records
+
+    for column in df.columns:
+        print(f"{column}: {df[column].iloc[0]}")
+
+    print(f"✅ Loaded {len(df)} records from Notion")
+
+    # Chrome setup
+    options = Options()
+    options.add_argument("--start-maximized")
+    # options.add_argument("--headless=new")  # Uncomment later
+
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()), options=options
+    )
 
     try:
-        process_records(driver, wait, df)
+        print("🌐 Opening Job-Room...")
+
+        # Try loading saved session
+        if load_cookies(driver):
+            driver.get(WEBSITE_URL)
+            time.sleep(4)
+            print("✅ Session restored!")
+        else:
+            driver.get(WEBSITE_URL)
+            print("\n⚠️ No saved session found.")
+            print("Please login manually using AGOV now.")
+            input("Press Enter AFTER you have successfully logged in...")
+
+            # Save cookies after successful login
+            save_cookies(driver)
+            print("✅ Login session saved for future use!")
+
+        # Now we are logged in - ready to automate
+        print("\n🚀 Starting automation...")
+
+        for index, row in df.iterrows():
+            print(
+                f"\nProcessing {index + 1}/{len(df)}: '{row.get('Job Title', 'No Title')}' at '{row.get('Company', 'No Company')}' on '{row.get('Applied date 2', 'No Date')}'"
+            )
+
+            driver.get(WEBSITE_URL + "/create")  # Navigate to the form page
+            time.sleep(3)
+
+            # Fill in the form fields based on FIELD_SELECTORS
+            for field, selector in FIELD_SELECTORS.items():
+                value = row.get(field.capitalize(), "")
+                if value:
+                    try:
+                        element = driver.find_element(By.CSS_SELECTOR, selector)
+                        element.clear()
+                        element.send_keys(str(value))
+                        print(f"   → Filled {field} with '{value}'")
+                    except Exception as e:
+                        print(f"   ❌ Could not fill {field}: {e}")
+
+            print("   → Record processed")
+
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"❌ Error: {e}")
     finally:
-        input("\nPress Enter to close browser...")  # Keeps browser open for debugging
+        input("\nPress Enter to close browser...")
         driver.quit()
 
 
