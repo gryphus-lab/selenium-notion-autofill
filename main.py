@@ -24,22 +24,70 @@ def extract_formatted_field(val):
         return val
 
 
+def resolve_type_selector(value):
+    """Resolve selector for Type field based on value"""
+    type_value = str(value).strip().lower()
+
+    if type_value == "electronic":
+        return "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.electronic-0']"
+    elif type_value == "phone":
+        return "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.phone-0']"
+    else:
+        print(f"   ⚠️ Unknown Type: {type_value}")
+        return None
+
+
+def fill_typeahead(wait, element, field_name, value):
+    """Fill typeahead field"""
+    element.clear()
+    element.click()
+    time.sleep(1.2)
+    element.send_keys(str(value))
+    time.sleep(2)
+    try:
+        suggestion = wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "div[role='option'], li, .suggestion")
+            )
+        )
+        suggestion.click()
+        print(f"   ✓ Typeahead: {field_name} → {value}")
+    except Exception:
+        element.send_keys(Keys.ENTER)
+        print(f"   ✓ Typeahead (Enter): {field_name}")
+
+
+def fill_checkbox(driver, element, field_name):
+    """Fill checkbox field"""
+    if element.is_displayed():
+        driver.execute_script("arguments[0].click();", element)
+        print(f"   ✓ Checked {field_name}")
+    else:
+        print(f"   ⚠️ Checkbox not visible: {field_name}")
+
+
+def fill_radio(driver, element, field_name, value):
+    """Fill radio field"""
+    if value:
+        driver.execute_script("arguments[0].click();", element)
+        print(f"   ✓ Selected radio {field_name}")
+
+
+def fill_text(element, field_name, value):
+    """Fill text input field"""
+    element.clear()
+    element.send_keys(str(value))
+    print(f"   ✓ Filled {field_name} → {value}")
+
+
 def fill_field(driver, wait, field_name, selector, value, row=None):
     """Smart filler with special handling for Type checkboxes"""
     try:
         if field_name == "Type" and row is not None:
-            # Special logic for Type (electronic or phone)
-            type_value = str(value).strip().lower()
-
-            if type_value == "electronic":
-                selector = "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.electronic-0']"
-            elif type_value == "phone":
-                selector = "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.phone-0']"
-            else:
-                print(f"   ⚠️ Unknown Type: {type_value}")
+            selector = resolve_type_selector(value)
+            if selector is None:
                 return
-
-            print(f"   → Setting Type to: {type_value}")
+            print(f"   → Setting Type to: {str(value).strip().lower()}")
 
         element = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
@@ -49,44 +97,14 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
         )
         time.sleep(0.8)
 
-        # === TYPEAHEAD ===
         if "single-typeahead" in selector or "typeahead" in selector.lower():
-            element.clear()
-            element.click()
-            time.sleep(1.2)
-            element.send_keys(str(value))
-            time.sleep(2)
-            try:
-                suggestion = wait.until(
-                    EC.element_to_be_clickable(
-                        (By.CSS_SELECTOR, "div[role='option'], li, .suggestion")
-                    )
-                )
-                suggestion.click()
-                print(f"   ✓ Typeahead: {field_name} → {value}")
-            except Exception:
-                element.send_keys(Keys.ENTER)
-                print(f"   ✓ Typeahead (Enter): {field_name}")
-
-        # === CHECKBOX (including Type) ===
+            fill_typeahead(wait, element, field_name, value)
         elif "checkbox" in selector.lower() or field_name == "Type":
-            if element.is_displayed():
-                driver.execute_script("arguments[0].click();", element)
-                print(f"   ✓ Checked {field_name}")
-            else:
-                print(f"   ⚠️ Checkbox not visible: {field_name}")
-
-        # === RADIO ===
+            fill_checkbox(driver, element, field_name)
         elif "radio" in selector.lower():
-            if value:
-                driver.execute_script("arguments[0].click();", element)
-                print(f"   ✓ Selected radio {field_name}")
-
-        # === DEFAULT TEXT INPUT ===
+            fill_radio(driver, element, field_name, value)
         else:
-            element.clear()
-            element.send_keys(str(value))
-            print(f"   ✓ Filled {field_name} → {value}")
+            fill_text(element, field_name, value)
 
     except Exception as e:
         print(f"   ❌ Could not fill {field_name}: {e}")
@@ -105,7 +123,7 @@ def main():
     df["Arbeitspensum"] = "false"
     df["Status"] = "false"
     df["PLZ"] = "8001"
-    
+
     df = df.head(1)  # Remove this line later
 
     for column in df.columns:
