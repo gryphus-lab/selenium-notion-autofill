@@ -203,6 +203,7 @@ def main():
                 value = row.get(field)
                 fill_field(driver, wait, field, selector, value, row=row)
 
+            input("\nPress Enter to submit the form after reviewing the filled data...")
             print("   → Record processed")
 
     except Exception:
