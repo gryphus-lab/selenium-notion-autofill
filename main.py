@@ -11,10 +11,13 @@ from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import ast
+import traceback
 
 from config import FIELD_SELECTORS, NOTION_API_KEY, DATABASE_ID, WEBSITE_URL
 from utils.notion_helper import NotionHelper
-from utils.session_helper import load_cookies, save_cookies
+
+# Constants
+EXECUTE_SCRIPT_CLICK = "arguments[0].click();"
 
 
 def extract_formatted_field(val):
@@ -37,30 +40,33 @@ def resolve_type_selector(value):
         return None
 
 
-def fill_typeahead(wait, element, field_name, value):
+def fill_typeahead(driver, wait, element, field_name, value):
     """Fill typeahead field"""
-    element.clear()
-    element.click()
-    time.sleep(1.2)
+    if element.is_displayed():
+        driver.execute_script(EXECUTE_SCRIPT_CLICK, element)
+
     element.send_keys(str(value))
     time.sleep(2)
     try:
         suggestion = wait.until(
             EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, "div[role='option'], li, .suggestion")
+                (By.CSS_SELECTOR, "button[id*='ngb-typeahead-']")
             )
         )
+
         suggestion.click()
-        print(f"   ✓ Typeahead: {field_name} → {value}")
+        final_value = element.get_attribute("value")
+        print(f"   ✓ Typeahead: {field_name} → Clicked suggestion - Selected value: {final_value}")
     except Exception:
         element.send_keys(Keys.ENTER)
-        print(f"   ✓ Typeahead (Enter): {field_name}")
+        final_value = element.get_attribute("value")
+        print(f"   ✓ Typeahead (Enter): {field_name} - tried pressing Enter without waiting for dropdown → Selected value: {final_value}")
 
 
 def fill_checkbox(driver, element, field_name):
     """Fill checkbox field"""
     if element.is_displayed():
-        driver.execute_script("arguments[0].click();", element)
+        driver.execute_script(EXECUTE_SCRIPT_CLICK, element)
         print(f"   ✓ Checked {field_name}")
     else:
         print(f"   ⚠️ Checkbox not visible: {field_name}")
@@ -69,7 +75,7 @@ def fill_checkbox(driver, element, field_name):
 def fill_radio(driver, element, field_name, value):
     """Fill radio field"""
     if value:
-        driver.execute_script("arguments[0].click();", element)
+        driver.execute_script(EXECUTE_SCRIPT_CLICK, element)
         print(f"   ✓ Selected radio {field_name}")
 
 
@@ -92,13 +98,14 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
         element = wait.until(
             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
         )
+
         driver.execute_script(
             "arguments[0].scrollIntoView({block: 'center'});", element
         )
         time.sleep(0.8)
 
         if "single-typeahead" in selector or "typeahead" in selector.lower():
-            fill_typeahead(wait, element, field_name, value)
+            fill_typeahead(driver, wait, element, field_name, value)
         elif "checkbox" in selector.lower() or field_name == "Type":
             fill_checkbox(driver, element, field_name)
         elif "radio" in selector.lower():
@@ -106,8 +113,10 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
         else:
             fill_text(element, field_name, value)
 
-    except Exception as e:
-        print(f"   ❌ Could not fill {field_name}: {e}")
+    except Exception:
+        print(f"   ❌ Could not fill {field_name}: {value}")
+        driver.save_screenshot("results/jobroom_fill_field_error.png")
+        traceback.print_exc()
 
 
 def main():
@@ -122,7 +131,7 @@ def main():
     df["RAV"] = "false"
     df["Arbeitspensum"] = "false"
     df["Status"] = "false"
-    df["PLZ"] = "8001"
+    df["PLZ"] = "8001" # Temporary hardcoded value for testing, replace with actual data from Notion if needed
 
     df = df.head(1)  # Remove this line later
 
@@ -140,16 +149,23 @@ def main():
 
     try:
         print("🌐 Opening Job-Room...")
+        driver.get(WEBSITE_URL)
 
-        if load_cookies(driver):
-            driver.get(WEBSITE_URL)
-            time.sleep(4)
-            print("✅ Session restored!")
-        else:
-            driver.get(WEBSITE_URL)
-            print("Please login manually...")
-            input("Press Enter AFTER successful login...")
-            save_cookies(driver)
+        # click Login button
+        driver.find_element(
+            By.CSS_SELECTOR, ".btn.btn-primary.d-none.d-lg-block.ng-star-inserted"
+        ).click()
+        time.sleep(1)
+
+        # Click AGOV button
+        driver.find_element(
+            By.XPATH, "(//button[@class='idp-card small xtb-default'])[1]"
+        ).click()
+        time.sleep(1)
+
+        print("Please login manually...")
+
+        input("Press Enter AFTER successful login...")
 
         print("\n🚀 Starting automation...")
 
@@ -165,8 +181,10 @@ def main():
 
             print("   → Record processed")
 
-    except Exception as e:
-        print(f"❌ Error: {e}")
+    except Exception:
+        print("❌ Error:")
+        driver.save_screenshot("results/jobroom_main_error.png")
+        traceback.print_exc()
     finally:
         input("\nPress Enter to close browser...")
         driver.quit()
