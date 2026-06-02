@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Notion → Selenium Autofill Script"""
 
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -15,6 +16,7 @@ import traceback
 
 from config import FIELD_SELECTORS, NOTION_API_KEY, DATABASE_ID, WEBSITE_URL
 from utils.notion_helper import NotionHelper
+from datetime import datetime, timezone
 
 # Constants
 EXECUTE_SCRIPT_CLICK = "arguments[0].click();"
@@ -56,11 +58,15 @@ def fill_typeahead(driver, wait, element, field_name, value):
 
         suggestion.click()
         final_value = element.get_attribute("value")
-        print(f"   ✓ Typeahead: {field_name} → Clicked suggestion - Selected value: {final_value}")
+        print(
+            f"   ✓ Typeahead: {field_name} → Clicked suggestion - Selected value: {final_value}"
+        )
     except Exception:
         element.send_keys(Keys.ENTER)
         final_value = element.get_attribute("value")
-        print(f"   ✓ Typeahead (Enter): {field_name} - tried pressing Enter without waiting for dropdown → Selected value: {final_value}")
+        print(
+            f"   ✓ Typeahead (Enter): {field_name} - tried pressing Enter without waiting for dropdown → Selected value: {final_value}"
+        )
 
 
 def fill_checkbox(driver, element, field_name):
@@ -121,7 +127,23 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
 
 def main():
     notion = NotionHelper(NOTION_API_KEY)
-    df = notion.get_database_data(DATABASE_ID)
+
+    now = datetime.now(timezone.utc)
+    start_of_month = datetime(now.year, now.month, 1).strftime("%Y-%m-%d")
+    if now.month == 12:
+        end_of_month = datetime(now.year + 1, 1, 1).strftime("%Y-%m-%d")
+    else:
+        end_of_month = datetime(now.year, now.month + 1, 1).strftime("%Y-%m-%d")
+
+    # 3. Construct the filter payload
+    # (Change "Date" to match your exact Notion property column name)
+    month_filter = {
+        "and": [
+            {"property": "Applied date", "date": {"on_or_after": start_of_month}},
+            {"property": "Applied date", "date": {"before": end_of_month}},
+        ]
+    }
+    df = notion.get_database_data(DATABASE_ID, filter=month_filter)
 
     if "Date" in df.columns:
         df["Date"] = df["Date"].apply(extract_formatted_field)
@@ -131,9 +153,11 @@ def main():
     df["RAV"] = "false"
     df["Arbeitspensum"] = "false"
     df["Status"] = "false"
-    df["PLZ"] = "8001" # Temporary hardcoded value for testing, replace with actual data from Notion if needed
+    df["PLZ"] = (
+        "8001"  # Temporary hardcoded value for testing, replace with actual data from Notion if needed
+    )
 
-    df = df.head(1)  # Remove this line later
+    df = df.head(1)  # Takes most recent entry only, remove this line later
 
     for column in df.columns:
         print(f"{column}: {df[column].iloc[0]}")
@@ -159,7 +183,7 @@ def main():
 
         # Click AGOV button
         driver.find_element(
-            By.XPATH, "(//button[@class='idp-card small xtb-default'])[1]"
+            By.CSS_SELECTOR, "button[class*='idp-card small xtb-default']"
         ).click()
         time.sleep(1)
 
