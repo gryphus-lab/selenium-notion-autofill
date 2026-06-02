@@ -150,12 +150,10 @@ def main():
     if "Type" in df.columns:
         df["Type"] = df["Type"].apply(extract_formatted_field)
 
+    df["PLZ_Ort"] = df["PLZ_Ort"].astype(str).str[:4] # Only take PLZ from Notion, the Ort is lookedup via typeahead on the website
     df["RAV"] = "false"
     df["Arbeitspensum"] = "false"
     df["Status"] = "false"
-    df["PLZ"] = (
-        "8001"  # Temporary hardcoded value for testing, replace with actual data from Notion if needed
-    )
 
     df = df.head(1)  # Takes most recent entry only, remove this line later
 
