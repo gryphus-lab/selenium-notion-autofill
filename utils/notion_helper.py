@@ -10,13 +10,13 @@ class NotionHelper:
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "Notion-Version": "2022-06-28",  # You can try "2025-09-03" later
+            "Notion-Version": "2022-06-28",
         }
 
     def get_database_data(
         self, database_id: str, filter: Optional[Dict] = None
     ) -> pd.DataFrame:
-        """Fetch all rows from Notion database using direct HTTP calls"""
+        """Fetch all rows from Notion database"""
         url = f"{self.base_url}/databases/{database_id}/query"
         results: List[Dict] = []
         has_more = True
@@ -32,8 +32,10 @@ class NotionHelper:
             response = httpx.post(url, headers=self.headers, json=payload, timeout=30)
 
             if response.status_code != 200:
-                raise Exception(
-                    f"Notion API error {response.status_code}: {response.text}"
+                raise httpx.HTTPStatusError(
+                    f"Notion API error {response.status_code}: {response.text}",
+                    request=response.request,
+                    response=response,
                 )
 
             data = response.json()
@@ -54,33 +56,52 @@ class NotionHelper:
 
         return pd.DataFrame(data_rows)
 
+    def update_row(self, page_id: str, properties: Dict[str, Any]) -> bool:
+        url = f"{self.base_url}/pages/{page_id}"
+
+        payload = {"properties": properties}
+
+        try:
+            response = httpx.patch(url, headers=self.headers, json=payload, timeout=20)
+
+            if response.status_code == 200:
+                print(f"   ✅ Notion row updated successfully (ID: {page_id[:8]}...)")
+                return True
+            else:
+                print(
+                    f"   ❌ Failed to update Notion row: {response.status_code} - {response.text}"
+                )
+                return False
+
+        except Exception as e:
+            print(f"   ❌ Exception while updating Notion row: {e}")
+            return False
+
     def _get_property_value(self, prop: Any) -> Any:
         if not prop or not isinstance(prop, dict):
             return None
 
-        prop_type = prop.get("type")
+        def _plain_text_list(values: List[Dict[str, Any]]) -> str:
+            return " ".join([t.get("plain_text", "") for t in values]).strip()
 
-        if prop_type == "title":
-            return " ".join(
-                [t.get("plain_text", "") for t in prop.get("title", [])]
-            ).strip()
-        elif prop_type == "rich_text":
-            return " ".join(
-                [t.get("plain_text", "") for t in prop.get("rich_text", [])]
-            ).strip()
-        elif prop_type in ["email", "phone_number", "url"]:
-            return prop.get(prop_type) or ""
-        elif prop_type == "select":
-            select = prop.get("select")
-            return select.get("name") if select else ""
-        elif prop_type == "multi_select":
-            return [item.get("name") for item in prop.get("multi_select", [])]
-        elif prop_type == "checkbox":
-            return prop.get("checkbox", False)
-        elif prop_type == "number":
-            return prop.get("number")
-        elif prop_type == "date":
-            date = prop.get("date")
-            return date.get("start") if date else ""
-        else:
-            return str(prop.get(prop_type, ""))
+        type_handlers = {
+            "title": lambda p: _plain_text_list(p.get("title", [])),
+            "rich_text": lambda p: _plain_text_list(p.get("rich_text", [])),
+            "email": lambda p: p.get("email") or "",
+            "phone_number": lambda p: p.get("phone_number") or "",
+            "url": lambda p: p.get("url") or "",
+            "select": lambda p: (p.get("select") or {}).get("name", ""),
+            "multi_select": lambda p: [
+                item.get("name") for item in p.get("multi_select", [])
+            ],
+            "checkbox": lambda p: p.get("checkbox", False),
+            "number": lambda p: p.get("number"),
+            "date": lambda p: (p.get("date") or {}).get("start", ""),
+        }
+
+        prop_type = prop.get("type")
+        handler = type_handlers.get(prop_type)
+        if handler:
+            return handler(prop)
+
+        return str(prop.get(prop_type, ""))

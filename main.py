@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Notion → Selenium Autofill Script"""
 
-
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -150,7 +149,9 @@ def main():
     if "Type" in df.columns:
         df["Type"] = df["Type"].apply(extract_formatted_field)
 
-    df["PLZ_Ort"] = df["PLZ_Ort"].astype(str).str[:4] # Only take PLZ from Notion, the Ort is lookedup via typeahead on the website
+    df["PLZ_Ort"] = (
+        df["PLZ_Ort"].astype(str).str[:4]
+    )  # Only take PLZ from Notion, the Ort is lookedup via typeahead on the website
     df["RAV"] = "false"
     df["Arbeitspensum"] = "false"
     df["Status"] = "false"
@@ -202,8 +203,19 @@ def main():
                 fill_field(driver, wait, field, selector, value, row=row)
 
             input("\nPress Enter to submit the form after reviewing the filled data...")
-            print("   → Record processed")
 
+            success = notion.update_row(
+                page_id=row["id"],
+                properties={
+                    "Tracked": {"checkbox": True},
+                },
+            )
+            if success:
+                print("   → Record processed")
+            else:
+                print(
+                    "   → Failed to update Notion record. Please check Notion database for details."
+                )
     except Exception:
         print("❌ Error:")
         driver.save_screenshot("results/jobroom_main_error.png")
