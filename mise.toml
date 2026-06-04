@@ -46,3 +46,6 @@ run = "uv add {args}"
 description = "Update dependencies"
 run = "uv sync --upgrade"
 
+[tasks.test]
+description = "Run tests"
+run = "uv run pytest"
