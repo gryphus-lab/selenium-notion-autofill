@@ -20,25 +20,85 @@ Automates web form filling by reading records from a Notion database and using S
 ## Requirements
 
 - Python 3.11+
-- `uv` package manager
+- `uv` package manager (configured in `mise.toml`)
 - Chrome browser installed
 
 ## Installation
 
-1. Create or sync the virtual environment:
-
-    ```bash
-    uv sync
-    source .venv/bin/activate
-    ```
-
-2. Install dependencies:
+1. Sync dependencies using `uv`:
 
     ```bash
     uv sync
     ```
+
+2. Configure your credentials in `src/selenium_notion_autofill/config.py`:
+   - Set `NOTION_API_KEY`
+   - Set `DATABASE_ID`
+   - Update `WEBSITE_URL` and `FIELD_SELECTORS` as needed
+
+## Project Structure
+
+```text
+selenium-notion-autofill/
+├── src/selenium_notion_autofill/
+│   ├── __init__.py              # Package initialization
+│   ├── __main__.py              # Main entry point
+│   ├── config.py                # Configuration variables
+│   └── utils/
+│       ├── __init__.py
+│       ├── notion_helper.py     # Notion API client
+│       └── session_helper.py    # Selenium session management
+├── tests/                       # Unit tests
+│   ├── test_config.py
+│   └── test_notion_helper.py
+├── docs/                        # Documentation
+├── pyproject.toml              # Project configuration
+├── mise.toml                   # Mise/task configuration
+└── README.md
+```
+
+## Usage
+
+### Run with uv
+
+```bash
+# Run the main script
+uv run -m selenium_notion_autofill
+
+# Or using mise
+mise run main
+```
+
+### Run tests
+
+```bash
+uv run pytest tests/ -v
+```
+
+### Code quality
+
+```bash
+# Format code
+uv run ruff format .
+
+# Lint code
+uv run ruff check . --fix
+```
 
 ## Configuration
+
+Edit `src/selenium_notion_autofill/config.py`:
+
+```bash
+uv sync
+source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+uv sync
+```
 
 Edit `config.py` to match your Notion workspace and target form:
 
@@ -55,7 +115,7 @@ Edit `config.py` to match your Notion workspace and target form:
 
 > Do not commit real API keys or secrets to version control.
 
-## Usage
+## Execution
 
 Run the project with:
 

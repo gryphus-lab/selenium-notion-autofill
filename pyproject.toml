@@ -13,24 +13,63 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "ruff>=0.6.0"
+    "ruff>=0.6.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
 ]
 
 [project.scripts]
-autofill = "main:main"
+autofill = "selenium_notion_autofill.__main__:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["config", "main"]
-packages = ["utils"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
-exclude = ["**/.venv/**"]
+exclude = ["**/.venv/**", "**/tests/**", "**/build/**"]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=src/selenium_notion_autofill --cov-report=html --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src/selenium_notion_autofill"]
+omit = ["**/tests/**"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+exclude = '''
+/(
+    \.venv
+  | \.git
+  | __pycache__
+  | build
+  | dist
+)/
+'''
 
 [tool.uv]
 package = true
+
+[dependency-groups]
+dev = [
+    "black>=26.5.1",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.15",
+]
 # Removed invalid `dependency-groups` layout for strict schema compatibility.
 # Use `project.optional-dependencies` for declaring optional/dev dependencies.

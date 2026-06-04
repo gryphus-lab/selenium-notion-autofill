@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Notion → Selenium Autofill Script"""
+"""Notion → Selenium Autofill Script - Main entry point."""
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -12,16 +12,29 @@ from webdriver_manager.chrome import ChromeDriverManager
 import time
 import ast
 import traceback
-
-from config import FIELD_SELECTORS, NOTION_API_KEY, DATABASE_ID, WEBSITE_URL
-from utils.notion_helper import NotionHelper
 from datetime import datetime, timezone
+
+from selenium_notion_autofill.config import (
+    FIELD_SELECTORS,
+    NOTION_API_KEY,
+    DATABASE_ID,
+    WEBSITE_URL,
+)
+from selenium_notion_autofill.utils import NotionHelper
 
 # Constants
 EXECUTE_SCRIPT_CLICK = "arguments[0].click();"
 
 
 def extract_formatted_field(val):
+    """Extract formatted field value from string representation.
+    
+    Args:
+        val: Value to extract from
+        
+    Returns:
+        The extracted string value or original value if extraction fails
+    """
     try:
         return ast.literal_eval(str(val)).get("string")
     except (ValueError, SyntaxError, TypeError):
@@ -29,7 +42,14 @@ def extract_formatted_field(val):
 
 
 def resolve_type_selector(value):
-    """Resolve selector for Type field based on value"""
+    """Resolve selector for Type field based on value.
+    
+    Args:
+        value: The type value to resolve
+        
+    Returns:
+        str: The CSS selector for the type value, or None if unknown
+    """
     type_value = str(value).strip().lower()
 
     if type_value == "electronic":
@@ -42,7 +62,15 @@ def resolve_type_selector(value):
 
 
 def fill_typeahead(driver, wait, element, field_name, value):
-    """Fill typeahead field"""
+    """Fill typeahead field.
+    
+    Args:
+        driver: Selenium WebDriver instance
+        wait: WebDriverWait instance
+        element: The element to fill
+        field_name: Name of the field for logging
+        value: Value to fill
+    """
     if element.is_displayed():
         driver.execute_script(EXECUTE_SCRIPT_CLICK, element)
 
@@ -69,7 +97,13 @@ def fill_typeahead(driver, wait, element, field_name, value):
 
 
 def fill_checkbox(driver, element, field_name):
-    """Fill checkbox field"""
+    """Fill checkbox field.
+    
+    Args:
+        driver: Selenium WebDriver instance
+        element: The checkbox element
+        field_name: Name of the field for logging
+    """
     if element.is_displayed():
         driver.execute_script(EXECUTE_SCRIPT_CLICK, element)
         print(f"   ✓ Checked {field_name}")
@@ -78,21 +112,43 @@ def fill_checkbox(driver, element, field_name):
 
 
 def fill_radio(driver, element, field_name, value):
-    """Fill radio field"""
+    """Fill radio button field.
+    
+    Args:
+        driver: Selenium WebDriver instance
+        element: The radio button element
+        field_name: Name of the field for logging
+        value: Value indicating if it should be selected
+    """
     if value:
         driver.execute_script(EXECUTE_SCRIPT_CLICK, element)
         print(f"   ✓ Selected radio {field_name}")
 
 
 def fill_text(element, field_name, value):
-    """Fill text input field"""
+    """Fill text input field.
+    
+    Args:
+        element: The input element
+        field_name: Name of the field for logging
+        value: Value to fill
+    """
     element.clear()
     element.send_keys(str(value))
     print(f"   ✓ Filled {field_name} → {value}")
 
 
 def fill_field(driver, wait, field_name, selector, value, row=None):
-    """Smart filler with special handling for Type checkboxes"""
+    """Smart field filler with special handling for Type checkboxes.
+    
+    Args:
+        driver: Selenium WebDriver instance
+        wait: WebDriverWait instance
+        field_name: Name of the field
+        selector: CSS selector for the field
+        value: Value to fill
+        row: Optional row data for context
+    """
     try:
         if field_name == "Type" and row is not None:
             selector = resolve_type_selector(value)
@@ -125,6 +181,7 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
 
 
 def main():
+    """Main entry point for the autofill script."""
     notion = NotionHelper(NOTION_API_KEY)
 
     now = datetime.now(timezone.utc)

@@ -1,10 +1,19 @@
+"""Helper class for interacting with Notion API."""
+
 import httpx
 import pandas as pd
 from typing import Optional, Dict, List, Any
 
 
 class NotionHelper:
+    """Helper class to interact with Notion database via API."""
+
     def __init__(self, api_key: str):
+        """Initialize NotionHelper with API key.
+        
+        Args:
+            api_key: Notion API key for authentication
+        """
         self.api_key = api_key
         self.base_url = "https://api.notion.com/v1"
         self.headers = {
@@ -16,7 +25,18 @@ class NotionHelper:
     def get_database_data(
         self, database_id: str, filter: Optional[Dict] = None
     ) -> pd.DataFrame:
-        """Fetch all rows from Notion database"""
+        """Fetch all rows from Notion database.
+        
+        Args:
+            database_id: The ID of the Notion database
+            filter: Optional filter to apply to the query
+            
+        Returns:
+            pd.DataFrame: DataFrame containing the database records
+            
+        Raises:
+            httpx.HTTPStatusError: If the API request fails
+        """
         url = f"{self.base_url}/databases/{database_id}/query"
         results: List[Dict] = []
         has_more = True
@@ -57,6 +77,15 @@ class NotionHelper:
         return pd.DataFrame(data_rows)
 
     def update_row(self, page_id: str, properties: Dict[str, Any]) -> bool:
+        """Update a Notion page with new properties.
+        
+        Args:
+            page_id: The ID of the Notion page to update
+            properties: Dictionary of properties to update
+            
+        Returns:
+            bool: True if update was successful, False otherwise
+        """
         url = f"{self.base_url}/pages/{page_id}"
 
         payload = {"properties": properties}
@@ -78,6 +107,14 @@ class NotionHelper:
             return False
 
     def _get_property_value(self, prop: Any) -> Any:
+        """Extract the value from a Notion property object.
+        
+        Args:
+            prop: The Notion property object
+            
+        Returns:
+            The extracted value in the appropriate Python type
+        """
         if not prop or not isinstance(prop, dict):
             return None
 

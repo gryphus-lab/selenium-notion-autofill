@@ -1,0 +1,5 @@
+recursive-include src/selenium_notion_autofill *.py
+include README.md
+include LICENSE
+include pyproject.toml
+include .gitignore

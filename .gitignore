@@ -23,6 +23,7 @@ share/python-wheels/
 MANIFEST
 cookies/
 results/
+.coverage/
 
 # Virtual Environment
 .venv/

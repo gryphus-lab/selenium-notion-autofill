@@ -1,3 +1,5 @@
+"""Configuration for Notion-Selenium Autofill."""
+
 NOTION_API_KEY = (
     "***REMOVED_NOTION_API_KEY***"  # From Notion Integrations
 )

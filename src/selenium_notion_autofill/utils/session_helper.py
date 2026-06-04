@@ -1,11 +1,18 @@
+"""Helper functions for managing Selenium WebDriver sessions."""
+
 import json
 import os
+from pathlib import Path
 
 COOKIES_FILE = "cookies/jobroom_cookies.json"
 
 
 def save_cookies(driver):
-    """Save cookies after manual login"""
+    """Save cookies after manual login.
+    
+    Args:
+        driver: Selenium WebDriver instance
+    """
     os.makedirs("cookies", exist_ok=True)
     cookies = driver.get_cookies()
     with open(COOKIES_FILE, "w") as f:
@@ -14,7 +21,14 @@ def save_cookies(driver):
 
 
 def load_cookies(driver):
-    """Load saved cookies"""
+    """Load saved cookies.
+    
+    Args:
+        driver: Selenium WebDriver instance
+        
+    Returns:
+        bool: True if cookies were loaded successfully, False otherwise
+    """
     if not os.path.exists(COOKIES_FILE):
         return False
 

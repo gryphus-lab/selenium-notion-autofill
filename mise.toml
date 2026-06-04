@@ -36,7 +36,7 @@ run = "uv sync"
 
 [tasks.main]
 description = "Run the main script"
-run = "uv run main.py"
+run = "uv run -m selenium_notion_autofill"
 
 [tasks.add]
 description = "Add a new dependency"
