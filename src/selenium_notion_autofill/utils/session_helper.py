@@ -2,14 +2,13 @@
 
 import json
 import os
-from pathlib import Path
 
 COOKIES_FILE = "cookies/jobroom_cookies.json"
 
 
 def save_cookies(driver):
     """Save cookies after manual login.
-    
+
     Args:
         driver: Selenium WebDriver instance
     """
@@ -22,10 +21,10 @@ def save_cookies(driver):
 
 def load_cookies(driver):
     """Load saved cookies.
-    
+
     Args:
         driver: Selenium WebDriver instance
-        
+
     Returns:
         bool: True if cookies were loaded successfully, False otherwise
     """

@@ -1,8 +1,9 @@
 """Helper class for interacting with Notion API."""
 
+from typing import Any, Dict, List, Optional
+
 import httpx
 import pandas as pd
-from typing import Optional, Dict, List, Any
 
 
 class NotionHelper:
@@ -10,7 +11,7 @@ class NotionHelper:
 
     def __init__(self, api_key: str):
         """Initialize NotionHelper with API key.
-        
+
         Args:
             api_key: Notion API key for authentication
         """
@@ -26,14 +27,14 @@ class NotionHelper:
         self, database_id: str, filter: Optional[Dict] = None
     ) -> pd.DataFrame:
         """Fetch all rows from Notion database.
-        
+
         Args:
             database_id: The ID of the Notion database
             filter: Optional filter to apply to the query
-            
+
         Returns:
             pd.DataFrame: DataFrame containing the database records
-            
+
         Raises:
             httpx.HTTPStatusError: If the API request fails
         """
@@ -78,11 +79,11 @@ class NotionHelper:
 
     def update_row(self, page_id: str, properties: Dict[str, Any]) -> bool:
         """Update a Notion page with new properties.
-        
+
         Args:
             page_id: The ID of the Notion page to update
             properties: Dictionary of properties to update
-            
+
         Returns:
             bool: True if update was successful, False otherwise
         """
@@ -91,14 +92,14 @@ class NotionHelper:
         payload = {"properties": properties}
 
         try:
-            response = httpx.patch(url, headers=self.headers, json=payload, timeout=20)
+            res = httpx.patch(url, headers=self.headers, json=payload, timeout=20)
 
-            if response.status_code == 200:
+            if res.status_code == 200:
                 print(f"   ✅ Notion row updated successfully (ID: {page_id[:8]}...)")
                 return True
             else:
                 print(
-                    f"   ❌ Failed to update Notion row: {response.status_code} - {response.text}"
+                    f"   ❌ Failed to update Notion row: {res.status_code} - {res.text}"
                 )
                 return False
 
@@ -108,10 +109,10 @@ class NotionHelper:
 
     def _get_property_value(self, prop: Any) -> Any:
         """Extract the value from a Notion property object.
-        
+
         Args:
             prop: The Notion property object
-            
+
         Returns:
             The extracted value in the appropriate Python type
         """

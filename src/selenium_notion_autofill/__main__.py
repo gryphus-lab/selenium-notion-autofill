@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """Notion → Selenium Autofill Script - Main entry point."""
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
-import time
 import ast
+import time
 import traceback
 from datetime import datetime, timezone
 
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support import expected_conditions as ec
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
+
 from selenium_notion_autofill.config import (
+    DATABASE_ID,
     FIELD_SELECTORS,
     NOTION_API_KEY,
-    DATABASE_ID,
     WEBSITE_URL,
 )
 from selenium_notion_autofill.utils import NotionHelper
@@ -28,10 +29,10 @@ EXECUTE_SCRIPT_CLICK = "arguments[0].click();"
 
 def extract_formatted_field(val):
     """Extract formatted field value from string representation.
-    
+
     Args:
         val: Value to extract from
-        
+
     Returns:
         The extracted string value or original value if extraction fails
     """
@@ -43,19 +44,25 @@ def extract_formatted_field(val):
 
 def resolve_type_selector(value):
     """Resolve selector for Type field based on value.
-    
+
     Args:
         value: The type value to resolve
-        
+
     Returns:
         str: The CSS selector for the type value, or None if unknown
     """
     type_value = str(value).strip().lower()
 
     if type_value == "electronic":
-        return "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.electronic-0']"
+        return (
+            "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel."
+            "electronic-0']"
+        )
     elif type_value == "phone":
-        return "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel.phone-0']"
+        return (
+            "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel."
+            "phone-0']"
+        )
     else:
         print(f"   ⚠️ Unknown Type: {type_value}")
         return None
@@ -63,7 +70,7 @@ def resolve_type_selector(value):
 
 def fill_typeahead(driver, wait, element, field_name, value):
     """Fill typeahead field.
-    
+
     Args:
         driver: Selenium WebDriver instance
         wait: WebDriverWait instance
@@ -78,27 +85,23 @@ def fill_typeahead(driver, wait, element, field_name, value):
     time.sleep(2)
     try:
         suggestion = wait.until(
-            EC.element_to_be_clickable(
+            ec.element_to_be_clickable(
                 (By.CSS_SELECTOR, "button[id*='ngb-typeahead-']")
             )
         )
 
         suggestion.click()
         final_value = element.get_attribute("value")
-        print(
-            f"   ✓ Typeahead: {field_name} → Clicked suggestion - Selected value: {final_value}"
-        )
+        print(f"   ✓ Typeahead: {field_name} → Selected value: {final_value}")
     except Exception:
         element.send_keys(Keys.ENTER)
         final_value = element.get_attribute("value")
-        print(
-            f"   ✓ Typeahead (Enter): {field_name} - tried pressing Enter without waiting for dropdown → Selected value: {final_value}"
-        )
+        print(f"   ✓ Typeahead (Enter): {field_name} - Selected value: {final_value}")
 
 
 def fill_checkbox(driver, element, field_name):
     """Fill checkbox field.
-    
+
     Args:
         driver: Selenium WebDriver instance
         element: The checkbox element
@@ -113,7 +116,7 @@ def fill_checkbox(driver, element, field_name):
 
 def fill_radio(driver, element, field_name, value):
     """Fill radio button field.
-    
+
     Args:
         driver: Selenium WebDriver instance
         element: The radio button element
@@ -127,7 +130,7 @@ def fill_radio(driver, element, field_name, value):
 
 def fill_text(element, field_name, value):
     """Fill text input field.
-    
+
     Args:
         element: The input element
         field_name: Name of the field for logging
@@ -140,7 +143,7 @@ def fill_text(element, field_name, value):
 
 def fill_field(driver, wait, field_name, selector, value, row=None):
     """Smart field filler with special handling for Type checkboxes.
-    
+
     Args:
         driver: Selenium WebDriver instance
         wait: WebDriverWait instance
@@ -157,7 +160,7 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
             print(f"   → Setting Type to: {str(value).strip().lower()}")
 
         element = wait.until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+            ec.presence_of_element_located((By.CSS_SELECTOR, selector))
         )
 
         driver.execute_script(
@@ -191,7 +194,7 @@ def main():
     else:
         end_of_month = datetime(now.year, now.month + 1, 1).strftime("%Y-%m-%d")
 
-    # Filter to get only records with "Applied date" in the current month where "Tracked" is not true
+    # Filter only records with "Applied date" in current month and "Tracked" = false
     month_filter = {
         "and": [
             {"property": "Applied date", "date": {"on_or_after": start_of_month}},
@@ -256,7 +259,10 @@ def main():
             # Click "Efforts to find work"
             driver.find_element(
                 By.XPATH,
-                "(//span[@class='nav-text ng-star-inserted'][normalize-space()='Efforts to find work'])[1]",
+                (
+                    "(//span[@class='nav-text ng-star-inserted']"
+                    "[normalize-space()='Efforts to find work'])[1]"
+                ),
             ).click()
             time.sleep(3)
 
@@ -285,7 +291,7 @@ def main():
                 print("   → Record processed")
             else:
                 print(
-                    "   → Failed to update Notion record. Please check Notion database for details."
+                    "   → Failed to update Notion record. Please check Notion database."
                 )
     except Exception:
         print("❌ Error:")
