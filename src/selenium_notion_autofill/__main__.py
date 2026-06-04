@@ -240,13 +240,13 @@ def main():
         driver.find_element(
             By.CSS_SELECTOR, ".btn.btn-primary.d-none.d-lg-block.ng-star-inserted"
         ).click()
-        time.sleep(1)
+        time.sleep(3)
 
         # Click AGOV button
         driver.find_element(
             By.CSS_SELECTOR, "button[class*='idp-card small xtb-default']"
         ).click()
-        time.sleep(1)
+        time.sleep(3)
 
         print("Please login manually...")
         input("Press Enter AFTER successful login...")
