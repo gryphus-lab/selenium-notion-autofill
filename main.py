@@ -160,8 +160,6 @@ def main():
     df["Arbeitspensum"] = "false"
     df["Status"] = "false"
 
-    df = df.head(1)  # Takes most recent entry only, remove this line later
-
     for column in df.columns:
         print(f"{column}: {df[column].iloc[0]}")
 

@@ -1,13 +1,21 @@
 # Notion Selenium Autofill
 
-Automates web form filling by reading records from a Notion database and using Selenium to populate fields in a browser.
+Automates web form filling by reading records from a Notion database and using Selenium to populate a browser form.
 
 ## Features
 
-- Reads a Notion database table into a pandas DataFrame
-- Opens a Chrome browser via Selenium
-- Uses CSS selectors from `config.py` to fill form fields
-- Includes a `project.scripts` entrypoint for `uv run autofill`
+- Queries Notion for records using the Notion REST API via `httpx`
+- Converts Notion properties into a pandas `DataFrame`
+- Opens Chrome with Selenium and `webdriver-manager`
+- Fills text inputs, typeahead fields, checkboxes, and radio buttons
+- Marks processed Notion records as tracked by updating the `Tracked` checkbox
+
+## Overview
+
+- Filters Notion records for the current month where `Applied date` is within the month and `Tracked` is `false`
+- Processes all matching records from Notion
+- Requires a manual login step before automation continues
+- Waits for user confirmation before form submission and before closing the browser
 
 ## Requirements
 
@@ -15,9 +23,9 @@ Automates web form filling by reading records from a Notion database and using S
 - `uv` package manager
 - Chrome browser installed
 
-## Setup
+## Installation
 
-1. Create and activate the virtual environment if not already present:
+1. Create or sync the virtual environment:
 
     ```bash
     uv sync
@@ -32,27 +40,40 @@ Automates web form filling by reading records from a Notion database and using S
 
 ## Configuration
 
-Edit `config.py` to set your project-specific values:
+Edit `config.py` to match your Notion workspace and target form:
 
 - `NOTION_API_KEY` — your Notion integration token
-- `DATABASE_ID` — the Notion database ID to read
-- `WEBSITE_URL` — the URL of the web form to fill
-- `FIELD_SELECTORS` — a mapping of Notion fields to CSS selectors
+- `DATABASE_ID` — the Notion database ID to query
+- `WEBSITE_URL` — the target website URL
+- `FIELD_SELECTORS` — mapping of Notion columns to CSS selectors for the web form
 
-> Tip: Do not commit real API keys or secrets to version control.
+### Important
+
+- `Type` is handled specially in `main.py` using a selector resolver.
+- `PLZ_Ort` is trimmed to the first 4 characters before being entered in the typeahead field.
+- The script depends on the current target site's form structure and may require selector updates.
+
+> Do not commit real API keys or secrets to version control.
 
 ## Usage
 
-Run the autofill script with:
+Run the project with:
 
 ```bash
 uv run autofill
 ```
 
-The script will open Chrome, navigate to `WEBSITE_URL`, and fill the configured fields for each record.
+The script will:
+
+1. query Notion for current-month, untracked records
+2. open Chrome and navigate to the configured site
+3. prompt for manual login
+4. process each matching row
+5. wait for confirmation before submission
+6. update the Notion page's `Tracked` checkbox on success
 
 ## Notes
 
-- The script currently does not submit the form automatically.
-- Update the selector values and form submit logic in `main.py` as needed.
-- Use the browser output to verify field mapping and values.
+- Error screenshots are saved under `results/jobroom_fill_field_error.png` and `results/jobroom_main_error.png`.
+- `utils/notion_helper.py` uses `httpx` directly instead of the official Notion SDK.
+- The project includes a development dependency on `ruff`.
