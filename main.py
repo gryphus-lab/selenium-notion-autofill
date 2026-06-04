@@ -134,15 +134,19 @@ def main():
     else:
         end_of_month = datetime(now.year, now.month + 1, 1).strftime("%Y-%m-%d")
 
-    # 3. Construct the filter payload
-    # (Change "Date" to match your exact Notion property column name)
+    # Filter to get only records with "Applied date" in the current month where "Tracked" is not true
     month_filter = {
         "and": [
             {"property": "Applied date", "date": {"on_or_after": start_of_month}},
             {"property": "Applied date", "date": {"before": end_of_month}},
+            {"property": "Tracked", "checkbox": {"equals": False}},
         ]
     }
     df = notion.get_database_data(DATABASE_ID, filter=month_filter)
+
+    if df.empty:
+        print("No new records to process for this month. Exiting.")
+        return
 
     if "Date" in df.columns:
         df["Date"] = df["Date"].apply(extract_formatted_field)
@@ -187,21 +191,33 @@ def main():
         time.sleep(1)
 
         print("Please login manually...")
-
         input("Press Enter AFTER successful login...")
-
         print("\n🚀 Starting automation...")
 
+        # Loop through Notion records and fill the form
         for index, row in df.iterrows():
             print(f"\nProcessing {index + 1}/{len(df)}: {row.get('Role', 'N/A')}")
 
-            driver.get(WEBSITE_URL + "/create")
-            time.sleep(5)
+            # Click "Efforts to find work"
+            driver.find_element(
+                By.XPATH,
+                "(//span[@class='nav-text ng-star-inserted'][normalize-space()='Efforts to find work'])[1]",
+            ).click()
+            time.sleep(3)
 
+            # Click "Enter" button to go to form
+            driver.find_element(
+                By.CSS_SELECTOR,
+                ".add-work-effort-button.btn.btn-primary.btn-block.btn-truncate",
+            ).click()
+            time.sleep(3)
+
+            # Fill each field based on the mapping
             for field, selector in FIELD_SELECTORS.items():
                 value = row.get(field)
                 fill_field(driver, wait, field, selector, value, row=row)
 
+            # Final review before submission
             input("\nPress Enter to submit the form after reviewing the filled data...")
 
             success = notion.update_row(

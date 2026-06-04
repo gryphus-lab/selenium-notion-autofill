@@ -4,7 +4,7 @@ NOTION_API_KEY = (
 DATABASE_ID = "962d7936a028461f8abc397b9a3d2e2e"
 
 # Website selectors (update these!)
-WEBSITE_URL = "https://www.job-room.ch/work-efforts"
+WEBSITE_URL = "https://www.job-room.ch/"
 
 FIELD_SELECTORS = {
     "Date": "input[id*='date']",
