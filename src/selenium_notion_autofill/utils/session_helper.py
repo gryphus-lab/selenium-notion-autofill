@@ -34,49 +34,64 @@ def save_session(driver):
     print("   ✅ Full session saved (cookies + storage)")
 
 
+def _open_base_domain(driver):
+    driver.get("https://www.job-room.ch")
+    time.sleep(3)
+
+
+def _load_cookies():
+    with open(COOKIES_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _apply_cookies(driver, cookies):
+    for cookie in cookies:
+        if "sameSite" in cookie:
+            cookie.pop("sameSite")
+        try:
+            driver.add_cookie(cookie)
+        except Exception:
+            continue
+
+
+def _restore_storage(driver):
+    if not os.path.exists(STORAGE_FILE):
+        return
+
+    with open(STORAGE_FILE, "r", encoding="utf-8") as f:
+        storage = json.load(f)
+
+    local = storage.get("localStorage") or {}
+    for key, value in local.items():
+        driver.execute_script(
+            "window.localStorage.setItem(arguments[0], arguments[1]);",
+            key,
+            value,
+        )
+
+    session = storage.get("sessionStorage") or {}
+    for key, value in session.items():
+        driver.execute_script(
+            "window.sessionStorage.setItem(arguments[0], arguments[1]);",
+            key,
+            value,
+        )
+
+
 def load_session(driver):
     """Load cookies and storage - more robust approach"""
     if not os.path.exists(COOKIES_FILE):
         return False
 
     try:
-        # 1. Go to base domain first
-        driver.get("https://www.job-room.ch")
-        time.sleep(3)
+        _open_base_domain(driver)
+        cookies = _load_cookies()
+        _apply_cookies(driver, cookies)
 
-        # 2. Load cookies
-        with open(COOKIES_FILE, "r", encoding="utf-8") as f:
-            cookies = json.load(f)
-
-        for cookie in cookies:
-            try:
-                # Remove domain-specific fields that often cause issues
-                if "sameSite" in cookie:
-                    cookie.pop("sameSite")
-                driver.add_cookie(cookie)
-            except Exception:
-                pass
-
-        # 3. Refresh to apply cookies
         driver.refresh()
         time.sleep(4)
 
-        # 4. Restore localStorage + sessionStorage
-        if os.path.exists(STORAGE_FILE):
-            with open(STORAGE_FILE, "r", encoding="utf-8") as f:
-                storage = json.load(f)
-
-            if storage.get("localStorage"):
-                for key, value in storage["localStorage"].items():
-                    driver.execute_script(
-                        f"window.localStorage.setItem('{key}', '{value}');"
-                    )
-
-            if storage.get("sessionStorage"):
-                for key, value in storage["sessionStorage"].items():
-                    driver.execute_script(
-                        f"window.sessionStorage.setItem('{key}', '{value}');"
-                    )
+        _restore_storage(driver)
 
         print("   ✅ Session restored (cookies + storage)")
         return True
