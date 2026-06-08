@@ -26,6 +26,7 @@ results/
 .coverage
 .pytest_cache/
 .ruff_cache/
+htmlcov/
 
 # Virtual Environment
 .venv/
