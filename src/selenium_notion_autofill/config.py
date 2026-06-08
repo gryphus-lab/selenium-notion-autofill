@@ -25,3 +25,7 @@ FIELD_SELECTORS = {
     "Arbeitspensum": "label[for*='radio-button-'][for$='FULLTIME']",
     "Status": "label[for*='radio-button-'][for$='PENDING']",
 }
+
+COOKIES_FILE = "cookies/jobroom_cookies.json"
+
+EXECUTE_SCRIPT_CLICK = "arguments[0].click();"

@@ -17,14 +17,15 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 from selenium_notion_autofill.config import (
     DATABASE_ID,
+    EXECUTE_SCRIPT_CLICK,
     FIELD_SELECTORS,
     NOTION_API_KEY,
     WEBSITE_URL,
 )
 from selenium_notion_autofill.utils import NotionHelper
+from selenium_notion_autofill.utils.session_helper import load_session, save_session
 
 # Constants
-EXECUTE_SCRIPT_CLICK = "arguments[0].click();"
 
 
 def extract_formatted_field(val):
@@ -228,32 +229,56 @@ def main():
 
     try:
         print("🌐 Opening Job-Room...")
-        driver.get(WEBSITE_URL)
 
-        # click Login button
-        driver.find_element(
-            By.CSS_SELECTOR, ".btn.btn-primary.d-none.d-lg-block.ng-star-inserted"
-        ).click()
-        time.sleep(3)
+        session_restored = load_session(driver)
 
-        # Click AGOV button
-        driver.find_element(
-            By.CSS_SELECTOR, "button[class*='idp-card small xtb-default']"
-        ).click()
-        time.sleep(3)
+        if session_restored:
+            driver.get(WEBSITE_URL)
+            time.sleep(5)
+            print("✅ Session restored!")
 
-        print("Please login manually...")
-        input("Press Enter AFTER successful login...")
+            # Verify if login actually worked
+            current_url = driver.current_url.lower()
+            if any(x in current_url for x in ["login", "auth", "saml", "agov"]):
+                print(
+                    "   ⚠️ Session restore did not log in automatically. "
+                    "Falling back to manual login."
+                )
+                session_restored = False
+
+        if not session_restored:
+            driver.get(WEBSITE_URL)
+            print("\n⚠️ No valid session found. Starting manual login...")
+
+            # Click Login button
+            try:
+                driver.find_element(
+                    By.CSS_SELECTOR,
+                    ".btn.btn-primary.d-none.d-lg-block.ng-star-inserted",
+                ).click()
+                time.sleep(3)
+            except Exception as e:
+                print(f"   Could not find Login button - already on login page?: {e}")
+
+            # Click AGOV button
+            try:
+                driver.find_element(
+                    By.CSS_SELECTOR, "button[class*='idp-card small xtb-default']"
+                ).click()
+                time.sleep(3)
+            except Exception as e:
+                print(f"   Could not find AGOV button: {e}")
+
+            input("✅ Press Enter AFTER successful AGOV login and QR code scan...")
+
+            # Save full session
+            save_session(driver)
+            print("✅ Full session (cookies + storage) saved for future use!")
+
         print("\n🚀 Starting automation...")
 
-        # Click "Efforts to find work"
-        driver.find_element(
-            By.XPATH,
-            (
-                "(//span[@class='nav-text ng-star-inserted']"
-                "[normalize-space()='Efforts to find work'])[1]"
-            ),
-        ).click()
+        # Navigate to "Efforts to find work"
+        driver.get(WEBSITE_URL + "work-efforts")
         time.sleep(3)
 
         # Loop through Notion records and fill the form
