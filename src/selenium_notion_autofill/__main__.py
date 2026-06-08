@@ -54,15 +54,9 @@ def resolve_type_selector(value):
     type_value = str(value).strip().lower()
 
     if type_value == "electronic":
-        return (
-            "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel."
-            "electronic-0']"
-        )
+        return "label[for*='alv-checkbox-portal'][for*='electronic']"
     elif type_value == "phone":
-        return (
-            "label[for='alv-checkbox-portal.work-efforts.edit-form.apply-channel."
-            "phone-0']"
-        )
+        return "label[for*='alv-checkbox-portal'][for*='phone']"
     else:
         print(f"   ⚠️ Unknown Type: {type_value}")
         return None
@@ -252,19 +246,19 @@ def main():
         input("Press Enter AFTER successful login...")
         print("\n🚀 Starting automation...")
 
+        # Click "Efforts to find work"
+        driver.find_element(
+            By.XPATH,
+            (
+                "(//span[@class='nav-text ng-star-inserted']"
+                "[normalize-space()='Efforts to find work'])[1]"
+            ),
+        ).click()
+        time.sleep(3)
+
         # Loop through Notion records and fill the form
         for index, row in df.iterrows():
             print(f"\nProcessing {index + 1}/{len(df)}: {row.get('Role', 'N/A')}")
-
-            # Click "Efforts to find work"
-            driver.find_element(
-                By.XPATH,
-                (
-                    "(//span[@class='nav-text ng-star-inserted']"
-                    "[normalize-space()='Efforts to find work'])[1]"
-                ),
-            ).click()
-            time.sleep(3)
 
             # Click "Enter" button to go to form
             driver.find_element(
