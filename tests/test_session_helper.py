@@ -55,7 +55,7 @@ def test_save_session_writes_files(tmp_path, monkeypatch):
     assert "localStorage" in storage
 
 
-def test__apply_cookies_removes_sameSite(monkeypatch):
+def test__apply_cookies_removes_same_site(monkeypatch):
     driver = DummyDriver()
     cookies = [{"name": "x", "value": "y", "sameSite": "None"}]
 
