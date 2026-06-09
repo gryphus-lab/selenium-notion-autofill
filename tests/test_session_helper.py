@@ -124,3 +124,57 @@ def test_load_session_success(tmp_path, monkeypatch):
     d = RestDriver()
     assert session_helper.load_session(d) is True
     assert getattr(calls, "opened") is True
+
+
+def test_load_session_success_without_info_file(tmp_path, monkeypatch):
+    cookies_file = tmp_path / "jobroom_cookies.json"
+    storage_file = tmp_path / "jobroom_storage.json"
+
+    cookies_file.write_text(json.dumps([{"name": "c", "value": "v"}]))
+    storage_file.write_text(json.dumps({"localStorage": {}}))
+
+    monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(storage_file))
+    monkeypatch.setattr(session_helper, "SESSION_INFO_FILE", str(tmp_path / "jobroom_session_info.json"))
+
+    calls = SimpleNamespace(opened=False)
+
+    class RestDriver:
+        def __init__(self):
+            self.added = []
+
+        def get(self, url):
+            calls.opened = True
+
+        def add_cookie(self, c):
+            self.added.append(c)
+
+        def refresh(self):
+            calls.refreshed = True
+
+        def execute_script(self, script, *args):
+            return None
+
+    d = RestDriver()
+    assert session_helper.load_session(d) is True
+    assert getattr(calls, "opened") is True
+
+
+def test_load_session_fails_with_stale_session_info(tmp_path, monkeypatch):
+    cookies_file = tmp_path / "jobroom_cookies.json"
+    storage_file = tmp_path / "jobroom_storage.json"
+    info_file = tmp_path / "jobroom_session_info.json"
+
+    cookies_file.write_text(json.dumps([{"name": "c", "value": "v"}]))
+    storage_file.write_text(json.dumps({"localStorage": {}}))
+    info_file.write_text(json.dumps({"date": "2000-01-01T00:00:00"}))
+
+    monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(storage_file))
+    monkeypatch.setattr(session_helper, "SESSION_INFO_FILE", str(info_file))
+
+    d = DummyDriver()
+    assert session_helper.load_session(d) is False
+    assert not cookies_file.exists()
+    assert not storage_file.exists()
+    assert not info_file.exists()

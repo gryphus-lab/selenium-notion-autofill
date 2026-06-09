@@ -204,19 +204,16 @@ def handle_login(driver):
     if session_restored:
         driver.get(WEBSITE_URL)
         time.sleep(5)
-        print("✅ Session restored!")
+        print("✅ Today's session restored!")
 
-        current_url = driver.current_url.lower()
-        if any(x in current_url for x in ["login", "auth", "saml", "agov"]):
-            print(
-                "   ⚠️ Session restore did not log in automatically. "
-                "Falling back to manual login."
-            )
+        # Optional verification
+        if any(x in driver.current_url.lower() for x in ["login", "auth", "saml"]):
+            print("   ⚠️ Session didn't stay logged in. Forcing fresh login.")
             session_restored = False
 
     if not session_restored:
         driver.get(WEBSITE_URL)
-        print("\n⚠️ No valid session found. Starting manual login...")
+        print("\n🔄 Starting fresh manual login (daily policy)...")
 
         try:
             driver.find_element(
