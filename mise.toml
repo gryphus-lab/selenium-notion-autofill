@@ -1,8 +1,6 @@
 [tools]
 python = "3.12"
 uv = 'latest'
-nodejs = "20"
-ruff = "latest"
 
 # Automatic virtual environment
 [env]
