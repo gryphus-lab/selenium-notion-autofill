@@ -9,12 +9,18 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
 
 from selenium_notion_autofill.config import (
     DATABASE_ID,
     NOTION_API_KEY,
 )
+
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except Exception:  # pragma: no cover - optional dependency
+    ChromeDriverManager = None
+    import shutil
+
 from selenium_notion_autofill.utils import NotionHelper
 from selenium_notion_autofill.utils.selenium_helper import (
     handle_login,
@@ -97,9 +103,18 @@ def main():
     options = Options()
     options.add_argument("--start-maximized")
 
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()), options=options
-    )
+    if ChromeDriverManager:
+        service = Service(ChromeDriverManager().install())
+    else:
+        chromedriver_path = shutil.which("chromedriver")
+        if not chromedriver_path:
+            raise RuntimeError(
+                "webdriver_manager not installed and chromedriver not found in PATH. "
+                "Install webdriver-manager or ensure chromedriver is available."
+            )
+        service = Service(chromedriver_path)
+
+    driver = webdriver.Chrome(service=service, options=options)
     wait = WebDriverWait(driver, 20)
 
     try:

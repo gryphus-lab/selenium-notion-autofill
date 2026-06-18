@@ -22,6 +22,7 @@ Automates web form filling by reading records from a Notion database and using S
 - Python 3.11+
 - `uv` package manager (configured in `mise.toml`)
 - Chrome browser installed
+- `webdriver-manager` for automatic ChromeDriver management
 
 ## Installation
 
