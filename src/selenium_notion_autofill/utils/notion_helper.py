@@ -138,8 +138,11 @@ class NotionHelper:
         }
 
         prop_type = prop.get("type")
-        handler = type_handlers.get(prop_type)
+        # prop_type can be None or non-string; ensure we only use str keys for lookup
+        handler = type_handlers.get(prop_type) if isinstance(prop_type, str) else None
         if handler:
-            return handler(prop)
+            retval = handler(prop)
+            print(f"prop_type: {prop_type}, return value: {retval} ")
+            return retval
 
         return str(prop.get(prop_type, ""))

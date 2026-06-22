@@ -23,6 +23,7 @@ FIELD_SELECTORS = {
     "URL": "input[id*='online-form-url']",
     "RAV": "label[for*='radio-button-'][for$='false']",
     "Arbeitspensum": "label[for*='radio-button-'][for$='FULLTIME']",
+    # TODO: "Interview": "dummy",  # This will be overridden in code
     "Status": "label[for*='radio-button-'][for$='PENDING']",
 }
 

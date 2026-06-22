@@ -28,6 +28,8 @@ def resolve_type_selector(value):
         return "label[for*='alv-checkbox-portal'][for*='electronic']"
     elif type_value == "phone":
         return "label[for*='alv-checkbox-portal'][for*='phone']"
+    elif type_value == "vorstellungsgespräch":
+        return "//label[normalize-space()='Vorstellungsgespräch']"
     else:
         print(f"   ⚠️ Unknown Type: {type_value}")
         return None
@@ -118,15 +120,24 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
         row: Optional row data for context
     """
     try:
-        if field_name == "Type" and row is not None:
+        if field_name == "Interview" and row is not None:
             selector = resolve_type_selector(value)
             if selector is None:
                 return
             print(f"   → Setting Type to: {str(value).strip().lower()}")
-
-        element = wait.until(
-            ec.presence_of_element_located((By.CSS_SELECTOR, selector))
-        )
+            element = wait.until(ec.presence_of_element_located((By.XPATH, selector)))
+        elif field_name == "Type" and row is not None:
+            selector = resolve_type_selector(value)
+            if selector is None:
+                return
+            print(f"   → Setting Type to: {str(value).strip().lower()}")
+            element = wait.until(
+                ec.presence_of_element_located((By.CSS_SELECTOR, selector))
+            )
+        else:
+            element = wait.until(
+                ec.presence_of_element_located((By.CSS_SELECTOR, selector))
+            )
 
         driver.execute_script(
             "arguments[0].scrollIntoView({block: 'center'});", element
@@ -135,7 +146,11 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
 
         if "single-typeahead" in selector or "typeahead" in selector.lower():
             fill_typeahead(driver, wait, element, field_name, value)
-        elif "checkbox" in selector.lower() or field_name == "Type":
+        elif (
+            "checkbox" in selector.lower()
+            or field_name == "Type"
+            or field_name == "Interview"
+        ):
             fill_checkbox(driver, element, field_name)
         elif "radio" in selector.lower():
             fill_radio(driver, element, field_name, value)
