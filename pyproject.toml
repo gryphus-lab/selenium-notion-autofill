@@ -12,14 +12,6 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "ruff>=0.6.0",
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "black>=23.0.0",
-]
-
 [project.scripts]
 autofill = "selenium_notion_autofill.__main__:main"
 
@@ -49,28 +41,12 @@ addopts = "-v --cov=src/selenium_notion_autofill --cov-report=html --cov-report=
 source = ["src/selenium_notion_autofill"]
 omit = ["**/tests/**"]
 
-[tool.black]
-line-length = 88
-target-version = ["py311"]
-exclude = '''
-/(
-    \.venv
-  | \.git
-  | __pycache__
-  | build
-  | dist
-)/
-'''
-
 [tool.uv]
 package = true
 
 [dependency-groups]
 dev = [
-    "black>=26.5.1",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.15",
 ]
-# Removed invalid `dependency-groups` layout for strict schema compatibility.
-# Use `project.optional-dependencies` for declaring optional/dev dependencies.
