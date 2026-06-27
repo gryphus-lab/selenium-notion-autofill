@@ -1,6 +1,7 @@
 [tools]
 python = "3.12"
 uv = 'latest'
+prettier = 'latest'
 
 # Automatic virtual environment
 [env]
@@ -20,12 +21,12 @@ echo "Python: $(python --version)"
 '''
 
 [tasks.lint]
-description = "Lint and check formatting with Ruff"
-run = "uv run ruff check . && uv run ruff format --check ."
+description = "Lint and check formatting with Ruff and Prettier"
+run = "uv run ruff check . && uv run ruff format --check . && prettier --check ."
 
 [tasks.format]
-description = "Format and fix code with Ruff"
-run = "uv run ruff format . && uv run ruff check --fix ."
+description = "Format and fix code with Ruff and Prettier"
+run = "uv run ruff format . && uv run ruff check --fix . && prettier --write ."
 
 # Tasks
 [tasks.install]

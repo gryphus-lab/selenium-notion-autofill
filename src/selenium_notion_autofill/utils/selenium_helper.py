@@ -1,3 +1,4 @@
+import ast
 import time
 import traceback
 
@@ -13,6 +14,23 @@ from selenium_notion_autofill.config import (
 from selenium_notion_autofill.utils.session_helper import load_session, save_session
 
 
+def get_notion_scalar_value(value):
+    """Extract scalar value from simple Notion value wrappers."""
+    if isinstance(value, dict):
+        value_type = value.get("type")
+        if isinstance(value_type, str) and value_type in value:
+            return value.get(value_type)
+        return value
+
+    if isinstance(value, str) and value.startswith("{"):
+        try:
+            return get_notion_scalar_value(ast.literal_eval(value))
+        except (SyntaxError, ValueError):
+            return value
+
+    return value
+
+
 def resolve_type_selector(value):
     """Resolve selector for Type field based on value.
 
@@ -22,7 +40,7 @@ def resolve_type_selector(value):
     Returns:
         str: The CSS selector for the type value, or None if unknown
     """
-    type_value = str(value).strip().lower()
+    type_value = str(get_notion_scalar_value(value)).strip().lower()
 
     if type_value == "electronic":
         return "label[for*='alv-checkbox-portal'][for*='electronic']"
@@ -121,10 +139,12 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
     """
     try:
         if field_name == "Interview" and row is not None:
-            selector = resolve_type_selector(value)
-            if selector is None:
+            interview_value = str(get_notion_scalar_value(value)).strip().lower()
+            if interview_value != "vorstellungsgespräch":
+                print(f"   → Skipping Interview: {interview_value}")
                 return
-            print(f"   → Setting Type to: {str(value).strip().lower()}")
+            selector = "//label[normalize-space()='Vorstellungsgespräch']"
+            print(f"   → Setting Interview to: {interview_value}")
             element = wait.until(ec.presence_of_element_located((By.XPATH, selector)))
         elif field_name == "Type" and row is not None:
             selector = resolve_type_selector(value)

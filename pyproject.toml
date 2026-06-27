@@ -2,7 +2,7 @@
 name = "selenium-notion-autofill"
 version = "0.1.0"
 description = "Selenium automation that reads from Notion and fills web forms"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "selenium>=4.20.0",
     "notion-client>=2.2.0",
@@ -35,7 +35,7 @@ select = ["E", "F", "I", "N", "W"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=src/selenium_notion_autofill --cov-report=html --cov-report=term-missing"
+addopts = "-v --cov=src/selenium_notion_autofill --cov-report=html --cov-report=term-missing --cov-report=xml:coverage.xml"
 
 [tool.coverage.run]
 source = ["src/selenium_notion_autofill"]

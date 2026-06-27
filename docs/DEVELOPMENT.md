@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- Python 3.11 or higher
+- Python 3.12 or higher
 - pip or uv (package manager)
 
 ### Installation
@@ -16,19 +16,10 @@ git clone <repository-url>
 cd selenium-notion-autofill
 ```
 
-1. Create a virtual environment and install dependencies
+1. Install dependencies (creates the `.venv` and installs the `dev` dependency group)
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-1. Install in development mode
-
-```bash
-pip install -e ".[dev]"
-# or with uv:
-uv pip install -e ".[dev]"
+uv sync
 ```
 
 ## Project Structure
@@ -75,7 +66,7 @@ pytest -v
 ### Formatting
 
 ```bash
-black src tests
+ruff format src tests
 ```
 
 ### Linting
@@ -120,9 +111,11 @@ Update `src/selenium_notion_autofill/config.py` with:
 ### Adding a new dependency
 
 ```bash
-# Edit pyproject.toml and add to dependencies section
-# Then reinstall
-pip install -e ".[dev]"
+# Add a runtime dependency
+uv add <package>
+
+# Add a dev-only dependency
+uv add --dev <package>
 ```
 
 ### Adding a new test

@@ -8,7 +8,7 @@ A single-run CLI that pulls job-application records from a Notion database and u
 
 ## Commands
 
-This project is driven by `uv` (Python 3.11+, see `mise.toml` for tooling). `mise run <task>` wraps the common ones.
+This project is driven by `uv` (Python 3.12+, see `mise.toml` for tooling). `mise run <task>` wraps the common ones.
 
 ```bash
 uv sync                                  # install deps (mise run install)
@@ -33,6 +33,7 @@ The run is a linear pipeline in `__main__.py:main()`:
 ### Field filling (`selenium_helper.py`)
 
 `fill_field()` is a dispatcher that picks a strategy by inspecting the **selector string and field name** (not a declared field type):
+
 - selector contains `typeahead` → `fill_typeahead` (types, waits for an `ngb-typeahead` suggestion button, clicks it, else falls back to ENTER)
 - selector contains `checkbox`, or field is `Type`/`Interview` → `fill_checkbox`
 - selector contains `radio` → `fill_radio`
@@ -42,7 +43,7 @@ The run is a linear pipeline in `__main__.py:main()`:
 
 ### Session persistence (`session_helper.py`)
 
-Sessions are saved to `cookies/` (cookies + localStorage + sessionStorage + `session_info.json` with a date stamp). **Daily policy:** `load_session()` only restores a session saved *today*; otherwise it deletes the old files and forces a fresh login. This matches the target site's daily-login requirement.
+Sessions are saved to `cookies/` (cookies + localStorage + sessionStorage + `session_info.json` with a date stamp). **Daily policy:** `load_session()` only restores a session saved _today_; otherwise it deletes the old files and forces a fresh login. This matches the target site's daily-login requirement.
 
 ### Notion layer (`notion_helper.py`)
 
