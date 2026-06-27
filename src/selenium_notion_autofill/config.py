@@ -12,7 +12,7 @@ NOTION_API_KEY = os.environ["NOTION_API_KEY"]
 DATABASE_ID = os.environ["DATABASE_ID"]
 
 # Website selectors
-WEBSITE_URL = "https://www.job-room.ch/"
+WEBSITE_URL = os.environ["WEBSITE_URL"]
 
 FIELD_SELECTORS = {
     "Date": "input[id*='date']",
@@ -29,7 +29,7 @@ FIELD_SELECTORS = {
     "URL": "input[id*='online-form-url']",
     "RAV": "label[for*='radio-button-'][for$='false']",
     "Arbeitspensum": "label[for*='radio-button-'][for$='FULLTIME']",
-    # TODO: "Interview": "dummy",  # This will be overridden in code
+    "Interview": "dummy",
     "Status": "label[for*='radio-button-'][for$='PENDING']",
 }
 

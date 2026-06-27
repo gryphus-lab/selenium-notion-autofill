@@ -8,6 +8,7 @@ Automates web form filling by reading records from a Notion database and using S
 - Converts Notion properties into a pandas `DataFrame`
 - Opens Chrome with Selenium and `webdriver-manager`
 - Fills text inputs, typeahead fields, checkboxes, and radio buttons
+- Handles interview records by checking `Vorstellungsgespräch` only when Notion marks the row as an interview
 - Marks processed Notion records as tracked by updating the `Tracked` checkbox
 
 ## Overview
@@ -19,7 +20,7 @@ Automates web form filling by reading records from a Notion database and using S
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - `uv` package manager (configured in `mise.toml`)
 - Chrome browser installed
 - `webdriver-manager` for automatic ChromeDriver management
@@ -28,14 +29,22 @@ Automates web form filling by reading records from a Notion database and using S
 
 1. Sync dependencies using `uv`:
 
-    ```bash
-    uv sync
-    ```
+   ```bash
+   uv sync
+   ```
 
-2. Configure your credentials in `src/selenium_notion_autofill/config.py`:
+2. Copy the example environment file and fill in your local values:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+3. Configure your credentials and target website in `.env`:
    - Set `NOTION_API_KEY`
    - Set `DATABASE_ID`
-   - Update `WEBSITE_URL` and `FIELD_SELECTORS` as needed
+   - Set `WEBSITE_URL`
+
+4. Update `FIELD_SELECTORS` in `src/selenium_notion_autofill/config.py` if the target form changes.
 
 ## Project Structure
 
@@ -48,10 +57,13 @@ selenium-notion-autofill/
 │   └── utils/
 │       ├── __init__.py
 │       ├── notion_helper.py     # Notion API client
+│       ├── selenium_helper.py   # Selenium form filling helpers
 │       └── session_helper.py    # Selenium session management
 ├── tests/                       # Unit tests
 │   ├── test_config.py
-│   └── test_notion_helper.py
+│   ├── test_notion_helper.py
+│   ├── test_selenium_helper.py
+│   └── test_session_helper.py
 ├── docs/                        # Documentation
 ├── pyproject.toml              # Project configuration
 ├── mise.toml                   # Mise/task configuration
@@ -73,8 +85,10 @@ mise run main
 ### Run tests
 
 ```bash
-uv run pytest tests/ -v
+uv run pytest
 ```
+
+Pytest writes terminal and HTML coverage reports, plus `coverage.xml` for SonarQube.
 
 ### Code quality
 
@@ -88,31 +102,33 @@ uv run ruff check . --fix
 
 ## Configuration
 
-Edit `src/selenium_notion_autofill/config.py`:
+Create a local `.env` file:
 
 ```bash
-uv sync
-source .venv/bin/activate
+cp .env.example .env
 ```
 
-Install dependencies:
-
-```bash
-uv sync
-```
-
-Edit `config.py` to match your Notion workspace and target form:
+Then set:
 
 - `NOTION_API_KEY` — your Notion integration token
 - `DATABASE_ID` — the Notion database ID to query
 - `WEBSITE_URL` — the target website URL
+
+Edit `src/selenium_notion_autofill/config.py` only when the target form selectors change:
+
 - `FIELD_SELECTORS` — mapping of Notion columns to CSS selectors for the web form
 
 ### Important
 
-- `Type` is handled specially in `main.py` using a selector resolver.
+- `Type` and `Interview` are handled specially in `utils/selenium_helper.py` using selector/value resolvers.
 - `PLZ_Ort` is trimmed to the first 4 characters before being entered in the typeahead field.
 - The script depends on the current target site's form structure and may require selector updates.
+
+## CI and SonarQube
+
+GitHub Actions runs `mise run install`, `mise run test`, and then the SonarQube scan. The test step generates `coverage.xml`, which is read by Sonar through `sonar.python.coverage.reportPaths`.
+
+The SonarQube scan requires `SONAR_TOKEN` to be configured as a GitHub Actions secret.
 
 > Do not commit real API keys or secrets to version control.
 
