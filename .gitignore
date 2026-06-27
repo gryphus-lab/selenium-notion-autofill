@@ -41,6 +41,11 @@ env/
 # uv
 uv.lock
 
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
 # Logs & Data
 *.log
 *.csv

@@ -1,9 +1,15 @@
 """Configuration for Notion-Selenium Autofill."""
 
-NOTION_API_KEY = (
-    "***REMOVED_NOTION_API_KEY***"  # From Notion Integrations
-)
-DATABASE_ID = "962d7936a028461f8abc397b9a3d2e2e"
+import os
+
+from dotenv import load_dotenv
+
+# Load user/instance-specific secrets from a local .env file (see .env.example).
+load_dotenv()
+
+# From Notion Integrations — set these in your .env file, never commit them.
+NOTION_API_KEY = os.environ["NOTION_API_KEY"]
+DATABASE_ID = os.environ["DATABASE_ID"]
 
 # Website selectors
 WEBSITE_URL = "https://www.job-room.ch/"
