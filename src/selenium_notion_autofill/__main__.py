@@ -3,9 +3,11 @@
 
 import ast
 import shutil
+import sys
 import traceback
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -97,7 +99,7 @@ def get_month_filter():
     return {
         "and": [
             {"property": APPLIED_DATE, "date": {"on_or_after": start_date}},
-            {"property": "Applied date", "date": {"before": end_date}},
+            {"property": APPLIED_DATE, "date": {"before": end_date}},
             {"property": "Tracked", "checkbox": {"equals": False}},
         ]
     }
@@ -168,8 +170,6 @@ def _create_driver():
 
 def main():
     """Main entry point for the autofill script."""
-    import sys
-
     mode = sys.argv[1] if len(sys.argv) > 1 else "new"
 
     notion = NotionHelper(NOTION_API_KEY)
@@ -227,7 +227,9 @@ def _run_update_rejections(notion):
 
     # Filter to only those with Update Details (rejection reason)
     df = df[
-        df["Update Details"].apply(lambda x: bool(x) and str(x).strip() != "")
+        df["Update Details"].apply(
+            lambda x: x is not None and pd.notna(x) and str(x).strip() != ""
+        )
     ].reset_index(drop=True)
 
     if df.empty:
@@ -253,7 +255,10 @@ def _run_update_rejections(notion):
         update_rejected_records(driver, wait, df, notion)
     except Exception as exc:
         print(f"❌ Error: {exc}")
-        driver.save_screenshot("results/jobroom_update_main_error.png")
+        try:
+            driver.save_screenshot("results/jobroom_update_main_error.png")
+        except Exception as screenshot_exc:
+            print(f"   ⚠️ Could not save screenshot: {screenshot_exc}")
         traceback.print_exc()
     finally:
         input("\nPress Enter to close browser...")

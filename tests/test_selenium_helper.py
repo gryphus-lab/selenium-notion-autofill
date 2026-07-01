@@ -147,17 +147,41 @@ def test_get_entries_returns_empty_on_exception():
     assert selenium_helper._get_entries(Driver()) == []
 
 
+def test_get_month_year_pairs_parses_unique_dates():
+    class DataFrameLike:
+        def __init__(self, values):
+            self.values = values
+            self.empty = False
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+    df = DataFrameLike({"Applied date": ["2026-07-01", "2026-08-15", None, "invalid"]})
+
+    assert selenium_helper._get_month_year_pairs(df) == [("2026", 7), ("2026", 8)]
+
+
 def test_find_existing_entry_matches_exact_then_fallback():
     class Entry:
         def __init__(self, text):
             self.text = text
 
     class Driver:
-        def find_elements(self, *args, **kwargs):
-            return [Entry("Acme Consulting Developer")]
+        def __init__(self, entries):
+            self.entries = entries
 
-    entry = selenium_helper._find_existing_entry(Driver(), "Acme", "Developer")
-    assert entry is not None
+        def find_elements(self, *args, **kwargs):
+            return self.entries
+
+    exact_entry = selenium_helper._find_existing_entry(
+        Driver([Entry("Acme Consulting Developer")]), "Acme", "Developer"
+    )
+    assert exact_entry is not None
+
+    fallback_entry = selenium_helper._find_existing_entry(
+        Driver([Entry("Acme Consulting Engineer")]), "Acme", "Developer"
+    )
+    assert fallback_entry is None
 
 
 def test_find_entry_by_company_prefix():
@@ -171,8 +195,13 @@ def test_find_entry_by_company_prefix():
 
 
 def test_format_absagegrund_parses_date_and_falls_back():
-    assert selenium_helper._format_absagegrund("2026-07-01", "Reason") == "01.07: Reason"
-    assert selenium_helper._format_absagegrund("invalid", "Reason") == "invalid: Reason"
+    assert (
+        selenium_helper._format_absagegrund("2026-07-01", "Reason")
+        == "01.07: Reason"
+    )
+    assert selenium_helper._format_absagegrund("invalid", "Reason") == (
+        "invalid: Reason"
+    )
 
 
 def test_is_absagegrund_candidate_filters_non_reason_fields():
@@ -269,5 +298,7 @@ def test_update_notion_tracked_prints_status(monkeypatch):
     selenium_helper._update_notion_tracked(Notion(True), "page123")
     selenium_helper._update_notion_tracked(Notion(False), "page123")
     assert any("Record processed" in item for args in printed for item in args)
-    assert any("Failed to update Notion record." in item for args in printed for item in args)
+    assert any(
+        "Failed to update Notion record." in item for args in printed for item in args
+    )
 
