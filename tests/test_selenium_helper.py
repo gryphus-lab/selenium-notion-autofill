@@ -137,3 +137,137 @@ def test_fill_field_text_branch(monkeypatch):
             return None
 
     selenium_helper.fill_field(Driver(), Wait(), "Role", "input.foo", "Engineer")
+
+
+def test_get_entries_returns_empty_on_exception():
+    class Driver:
+        def find_elements(self, *args, **kwargs):
+            raise selenium_helper.NoSuchElementException("boom")
+
+    assert selenium_helper._get_entries(Driver()) == []
+
+
+def test_find_existing_entry_matches_exact_then_fallback():
+    class Entry:
+        def __init__(self, text):
+            self.text = text
+
+    class Driver:
+        def find_elements(self, *args, **kwargs):
+            return [Entry("Acme Consulting Developer")]
+
+    entry = selenium_helper._find_existing_entry(Driver(), "Acme", "Developer")
+    assert entry is not None
+
+
+def test_find_entry_by_company_prefix():
+    class Entry:
+        def __init__(self, text):
+            self.text = text
+
+    entries = [Entry("Acme GmbH")]
+    result = selenium_helper._find_entry_by_company_prefix(entries, "Acme Solutions")
+    assert result is not None
+
+
+def test_format_absagegrund_parses_date_and_falls_back():
+    assert selenium_helper._format_absagegrund("2026-07-01", "Reason") == "01.07: Reason"
+    assert selenium_helper._format_absagegrund("invalid", "Reason") == "invalid: Reason"
+
+
+def test_is_absagegrund_candidate_filters_non_reason_fields():
+    class Elem:
+        def __init__(self, el_id, visible=True):
+            self._id = el_id
+            self._visible = visible
+
+        def get_attribute(self, key):
+            return self._id if key == "id" else ""
+
+        def is_displayed(self):
+            return self._visible
+
+    assert not selenium_helper._is_absagegrund_candidate(Elem("company-name"))
+    assert selenium_helper._is_absagegrund_candidate(Elem("reason-field"))
+
+
+def test_find_absagegrund_in_entry_prefers_reason_field():
+    class Elem:
+        def __init__(self, el_id):
+            self._id = el_id
+
+        def get_attribute(self, key):
+            return self._id if key == "id" else ""
+
+        def is_displayed(self):
+            return True
+
+    class Entry:
+        def find_elements(self, by, selector):
+            return [Elem("company-name"), Elem("reason-text")]
+
+    element = selenium_helper._find_absagegrund_in_entry(Entry())
+    assert element is not None
+    assert element.get_attribute("id") == "reason-text"
+
+
+def test_find_absagegrund_fallback_calls_wait():
+    class Wait:
+        def __init__(self):
+            self.called = False
+
+        def until(self, arg):
+            self.called = True
+            return "fallback"
+
+    wait = Wait()
+    assert selenium_helper._find_absagegrund_fallback(wait) == "fallback"
+    assert wait.called
+
+
+def test_fill_absagegrund_uses_fallback_if_no_inline_field(monkeypatch):
+    element_state = {}
+
+    class Elem:
+        def clear(self):
+            element_state["cleared"] = True
+
+        def send_keys(self, value):
+            element_state["sent"] = value
+
+    class Entry:
+        def find_elements(self, by, selector):
+            return []
+
+    class Wait:
+        def until(self, arg):
+            return Elem()
+
+    class Driver:
+        def execute_script(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+    selenium_helper._fill_absagegrund(Driver(), Wait(), Entry(), "01.07: Reason")
+    assert element_state["cleared"] is True
+    assert element_state["sent"] == "01.07: Reason"
+
+
+def test_update_notion_tracked_prints_status(monkeypatch):
+    printed = []
+
+    class Notion:
+        def __init__(self, result):
+            self.result = result
+
+        def update_row(self, page_id, properties):
+            assert page_id == "page123"
+            assert properties == {"Tracked": {"checkbox": True}}
+            return self.result
+
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(args))
+    selenium_helper._update_notion_tracked(Notion(True), "page123")
+    selenium_helper._update_notion_tracked(Notion(False), "page123")
+    assert any("Record processed" in item for args in printed for item in args)
+    assert any("Failed to update Notion record." in item for args in printed for item in args)
+
