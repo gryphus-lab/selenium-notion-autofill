@@ -4,6 +4,8 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
+from selenium.common.exceptions import WebDriverException
+
 COOKIES_FILE = "cookies/jobroom_cookies.json"
 STORAGE_FILE = "cookies/jobroom_storage.json"
 SESSION_INFO_FILE = "cookies/session_info.json"
@@ -18,7 +20,7 @@ def _is_session_from_today() -> bool:
             info = json.load(f)
         saved_date = datetime.fromisoformat(info.get("date")).date()
         return saved_date == date.today()
-    except Exception:
+    except (OSError, ValueError, TypeError):
         return False
 
 
@@ -29,7 +31,7 @@ def _delete_old_session():
             try:
                 os.remove(file_path)
                 print(f"   🗑️ Deleted old session file: {file_path}")
-            except Exception as e:
+            except OSError as e:
                 print(f"   ⚠️ Could not delete {file_path}: {e}")
 
 
@@ -51,8 +53,8 @@ def save_session(driver):
         storage["sessionStorage"] = driver.execute_script(
             "return Object.assign({}, window.sessionStorage);"
         )
-    except Exception as e:
-        print(f"   ⚠️ Could not save storage: {e}")
+    except WebDriverException as exc:
+        print(f"   ⚠️ Could not save storage: {exc}")
 
     with open(STORAGE_FILE, "w", encoding="utf-8") as f:
         json.dump(storage, f, indent=2, ensure_ascii=False)
@@ -90,8 +92,7 @@ def load_session(driver):
 
         print("   ✅ Today's session restored successfully")
         return True
-
-    except Exception as e:
+    except (OSError, ValueError, TypeError) as e:
         print(f"   ⚠️ Failed to restore session: {e}")
         return False
 
@@ -113,7 +114,7 @@ def _apply_cookies(driver, cookies):
             cookie.pop("sameSite")
         try:
             driver.add_cookie(cookie)
-        except Exception:
+        except WebDriverException:
             continue
 
 
