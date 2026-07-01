@@ -4,8 +4,14 @@ from selenium_notion_autofill.utils import selenium_helper
 
 
 def test_resolve_type_selector_known():
-    assert "electronic" in selenium_helper.resolve_type_selector("electronic")
-    assert "phone" in selenium_helper.resolve_type_selector("phone")
+    electronic_selector = selenium_helper.resolve_type_selector("electronic")
+    assert electronic_selector is not None
+    assert "electronic" in electronic_selector
+
+    phone_selector = selenium_helper.resolve_type_selector("phone")
+    assert phone_selector is not None
+    assert "phone" in phone_selector
+
     assert selenium_helper.resolve_type_selector(
         {"type": "string", "string": "Vorstellungsgespräch"}
     ) == "//label[normalize-space()='Vorstellungsgespräch']"
@@ -156,7 +162,17 @@ def test_get_month_year_pairs_parses_unique_dates():
         def get(self, key, default=None):
             return self.values.get(key, default)
 
-    df = DataFrameLike({"Applied date": ["2026-07-01", "2026-08-15", None, "invalid"]})
+    df = DataFrameLike(
+        {
+            "Applied date": [
+                "2026-07-01",
+                "2026-07-15",
+                "2026-08-15",
+                None,
+                "invalid",
+            ]
+        }
+    )
 
     assert selenium_helper._get_month_year_pairs(df) == [("2026", 7), ("2026", 8)]
 
@@ -178,10 +194,10 @@ def test_find_existing_entry_matches_exact_then_fallback():
     )
     assert exact_entry is not None
 
-    fallback_entry = selenium_helper._find_existing_entry(
-        Driver([Entry("Acme Consulting Engineer")]), "Acme", "Developer"
+    prefix_entry = selenium_helper._find_existing_entry(
+        Driver([Entry("Acme Labs Developer")]), "Acme Solutions", "Developer"
     )
-    assert fallback_entry is None
+    assert prefix_entry is not None
 
 
 def test_find_entry_by_company_prefix():
