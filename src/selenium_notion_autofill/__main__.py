@@ -115,7 +115,7 @@ def get_rejected_filter():
         "and": [
             {"property": APPLIED_DATE, "date": {"on_or_after": start_date}},
             {"property": APPLIED_DATE, "date": {"before": end_date}},
-            {"property": "Tracked", "checkbox": {"equals": True}},
+            {"property": "Tracked", "checkbox": {"equals": False}},
             {"property": "Stage", "status": {"equals": "Rejected"}},
         ]
     }

@@ -401,7 +401,7 @@ def update_rejected_records(driver, wait, df, notion):
 
     Only processes records where:
     - Stage == 'Rejected'
-    - Tracked == True (already submitted to Job-Room)
+    - Tracked ==  False (not yet processed)
     - Last Update Date and Update Details are present
 
     The Absagegrund field is filled with: "<DD.MM>: <reason>"

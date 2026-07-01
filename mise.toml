@@ -33,9 +33,13 @@ run = "uv run ruff format . && uv run ruff check --fix . && prettier --write ."
 description = "Install dependencies using uv"
 run = "uv sync"
 
-[tasks.main]
-description = "Run the main script"
-run = "uv run -m selenium_notion_autofill"
+[tasks.new]
+description = "Run the main script for 'new' entries"
+run = "uv run -m selenium_notion_autofill new"
+
+[tasks.update-rejections]
+description = "Run the main script for 'update-rejections' entries"
+run = "uv run -m selenium_notion_autofill update-rejections"
 
 [tasks.add]
 description = "Add a new dependency"
