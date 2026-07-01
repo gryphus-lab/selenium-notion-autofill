@@ -6,8 +6,8 @@ from pathlib import Path
 
 from selenium.common.exceptions import WebDriverException
 
-COOKIES_FILE = "cookies/jobroom_cookies.json"
-STORAGE_FILE = "cookies/jobroom_storage.json"
+COOKIES_FILE = "cookies/cookies.json"
+STORAGE_FILE = "cookies/storage.json"
 SESSION_INFO_FILE = "cookies/session_info.json"
 
 
