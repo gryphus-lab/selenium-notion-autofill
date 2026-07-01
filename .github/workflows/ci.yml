@@ -2,9 +2,13 @@ name: CI - Tests & SonarQube Scan
 
 on:
   push:
-    branches: [main, feature/**]
+    branches: ["main"]
   pull_request:
-    types: [opened, synchronize, reopened]
+    branches: ["main"]
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

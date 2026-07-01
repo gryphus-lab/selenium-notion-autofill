@@ -2,13 +2,20 @@ import ast
 import time
 import traceback
 
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as ec
 
 from selenium_notion_autofill.config import (
+    ENTRY_SELECTOR,
     EXECUTE_SCRIPT_CLICK,
     FIELD_SELECTORS,
+    SCROLL_INTO_VIEW_SCRIPT,
     WEBSITE_URL,
 )
 from selenium_notion_autofill.utils.session_helper import load_session, save_session
@@ -78,7 +85,7 @@ def fill_typeahead(driver, wait, element, field_name, value):
         suggestion.click()
         final_value = element.get_attribute("value")
         print(f"   ✓ Typeahead: {field_name} → Selected value: {final_value}")
-    except Exception:
+    except TimeoutException:
         element.send_keys(Keys.ENTER)
         final_value = element.get_attribute("value")
         print(f"   ✓ Typeahead (Enter): {field_name} - Selected value: {final_value}")
@@ -126,6 +133,50 @@ def fill_text(element, field_name, value):
     print(f"   ✓ Filled {field_name} → {value}")
 
 
+def _resolve_element(wait, field_name, selector, value, row=None):
+    if field_name == "Interview" and row is not None:
+        interview_value = str(get_notion_scalar_value(value)).strip().lower()
+        if interview_value != "vorstellungsgespräch":
+            print(f"   → Skipping Interview: {interview_value}")
+            return None
+
+        selector = "//label[normalize-space()='Vorstellungsgespräch']"
+        print(f"   → Setting Interview to: {interview_value}")
+        return wait.until(ec.presence_of_element_located((By.XPATH, selector)))
+
+    if field_name == "Type" and row is not None:
+        selector = resolve_type_selector(value)
+        if selector is None:
+            return None
+        print(f"   → Setting Type to: {str(value).strip().lower()}")
+        return wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, selector)))
+
+    return wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, selector)))
+
+
+def _is_typeahead(selector):
+    return "single-typeahead" in selector or "typeahead" in selector.lower()
+
+
+def _should_use_checkbox(field_name, selector):
+    return (
+        "checkbox" in selector.lower()
+        or field_name == "Type"
+        or field_name == "Interview"
+    )
+
+
+def _fill_with_strategy(driver, wait, field_name, selector, element, value):
+    if _is_typeahead(selector):
+        fill_typeahead(driver, wait, element, field_name, value)
+    elif _should_use_checkbox(field_name, selector):
+        fill_checkbox(driver, element, field_name)
+    elif "radio" in selector.lower():
+        fill_radio(driver, element, field_name, value)
+    else:
+        fill_text(element, field_name, value)
+
+
 def fill_field(driver, wait, field_name, selector, value, row=None):
     """Smart field filler with special handling for Type checkboxes.
 
@@ -138,47 +189,15 @@ def fill_field(driver, wait, field_name, selector, value, row=None):
         row: Optional row data for context
     """
     try:
-        if field_name == "Interview" and row is not None:
-            interview_value = str(get_notion_scalar_value(value)).strip().lower()
-            if interview_value != "vorstellungsgespräch":
-                print(f"   → Skipping Interview: {interview_value}")
-                return
-            selector = "//label[normalize-space()='Vorstellungsgespräch']"
-            print(f"   → Setting Interview to: {interview_value}")
-            element = wait.until(ec.presence_of_element_located((By.XPATH, selector)))
-        elif field_name == "Type" and row is not None:
-            selector = resolve_type_selector(value)
-            if selector is None:
-                return
-            print(f"   → Setting Type to: {str(value).strip().lower()}")
-            element = wait.until(
-                ec.presence_of_element_located((By.CSS_SELECTOR, selector))
-            )
-        else:
-            element = wait.until(
-                ec.presence_of_element_located((By.CSS_SELECTOR, selector))
-            )
+        element = _resolve_element(wait, field_name, selector, value, row)
+        if element is None:
+            return
 
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block: 'center'});", element
-        )
+        driver.execute_script(SCROLL_INTO_VIEW_SCRIPT, element)
         time.sleep(0.8)
-
-        if "single-typeahead" in selector or "typeahead" in selector.lower():
-            fill_typeahead(driver, wait, element, field_name, value)
-        elif (
-            "checkbox" in selector.lower()
-            or field_name == "Type"
-            or field_name == "Interview"
-        ):
-            fill_checkbox(driver, element, field_name)
-        elif "radio" in selector.lower():
-            fill_radio(driver, element, field_name, value)
-        else:
-            fill_text(element, field_name, value)
-
-    except Exception:
-        print(f"   ❌ Could not fill {field_name}: {value}")
+        _fill_with_strategy(driver, wait, field_name, selector, element, value)
+    except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
+        print(f"   ❌ Could not fill {field_name}: {value} ({exc})")
         driver.save_screenshot("results/jobroom_fill_field_error.png")
         traceback.print_exc()
 
@@ -224,12 +243,357 @@ def process_records(driver, wait, df, notion):
             print("   → Failed to update Notion record. Please check Notion database.")
 
 
+def _expand_month_section(driver, df):
+    """Expand the month section on the work-efforts page.
+
+    Job-Room groups entries by month in collapsible sections. This finds
+    and expands the section matching the reference month of the records.
+
+    Args:
+        driver: Selenium WebDriver instance
+        df: Dataframe containing records (uses Applied date to determine month)
+    """
+    # Determine the target month from the first record's Applied date
+    first_date = str(df.iloc[0].get("Applied date", ""))
+    if not first_date:
+        return
+
+    try:
+        # Parse month/year from the applied date (format: YYYY-MM-DD)
+        date_parts = first_date.split("-")
+        year = date_parts[0]
+        month_num = int(date_parts[1])
+
+        # German month names as used on Job-Room
+        month_names = {
+            1: "Januar",
+            2: "Februar",
+            3: "März",
+            4: "April",
+            5: "Mai",
+            6: "Juni",
+            7: "Juli",
+            8: "August",
+            9: "September",
+            10: "Oktober",
+            11: "November",
+            12: "Dezember",
+        }
+        month_name = month_names.get(month_num, "")
+
+        # Try to find and click the month section header
+        # Look for a collapsed section containing the month name
+        section_xpath = (
+            f"//button[contains(@class, 'collapsed')]"
+            f"[contains(., '{month_name}') and contains(., '{year}')]"
+            f" | "
+            f"//a[contains(@class, 'collapsed')]"
+            f"[contains(., '{month_name}') and contains(., '{year}')]"
+            f" | "
+            f"//div[contains(@class, 'collapsed')]"
+            f"[contains(., '{month_name}') and contains(., '{year}')]"
+        )
+
+        sections = driver.find_elements(By.XPATH, section_xpath)
+        if sections:
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});", sections[0]
+            )
+            time.sleep(0.5)
+            driver.execute_script(EXECUTE_SCRIPT_CLICK, sections[0])
+            time.sleep(2)
+            print(f"   ✓ Expanded section: {month_name} {year}")
+        else:
+            # Section might already be expanded or use different structure
+            # Try clicking any element with the month name
+            expanded_xpath = (
+                f"//button[contains(., '{month_name}') and contains(., '{year}')]"
+                f" | "
+                f"//a[contains(., '{month_name}') and contains(., '{year}')]"
+            )
+            expanded = driver.find_elements(By.XPATH, expanded_xpath)
+            if expanded:
+                print(f"   ✓ Section already expanded: {month_name} {year}")
+            else:
+                print(f"   ⚠️ Could not find month section for {month_name} {year}")
+
+    except (ValueError, IndexError, NoSuchElementException, WebDriverException) as e:
+        print(f"   ⚠️ Error expanding month section: {e}")
+
+
+def _format_absagegrund(update_date, update_details):
+    try:
+        date_parts = update_date.split("-")
+        return f"{date_parts[2]}.{date_parts[1]}: {update_details}"
+    except (IndexError, AttributeError):
+        return f"{update_date}: {update_details}"
+
+
+def _print_rejection_header(index, total, company, role, absagegrund):
+    print(f"\n{'=' * 60}")
+    print(f"Updating rejection {index + 1}/{total}: {company} - {role}")
+    print(f"   Absagegrund: {absagegrund[:80]}...")
+    print(f"{'=' * 60}")
+
+
+def _process_rejected_entry(driver, wait, notion, row, index, total):
+    company = str(row.get("Company", ""))
+    role = str(row.get("Role", ""))
+    update_date = str(row.get("Last Update Date", ""))
+    update_details = str(row.get("Update Details", ""))
+
+    if not update_date or not update_details:
+        print(
+            f"\n⚠️  Skipping {company} - {role}: "
+            "missing Last Update Date or Update Details"
+        )
+        return
+
+    absagegrund = _format_absagegrund(update_date, update_details)
+    _print_rejection_header(index, total, company, role, absagegrund)
+
+    try:
+        entry = _find_existing_entry(driver, company, role)
+        if entry is None:
+            _report_missing_entry(driver, index, company)
+            return
+
+        _update_rejected_entry(driver, wait, notion, row, company, absagegrund, entry)
+    except (NoSuchElementException, TimeoutException, WebDriverException) as exc:
+        print(f"   ❌ Error updating {company}: {exc}")
+        driver.save_screenshot(f"results/jobroom_update_error_{index}.png")
+        traceback.print_exc()
+
+
+def _report_missing_entry(driver, index, company):
+    print(f"   ❌ Could not find entry for {company} on the page")
+    driver.save_screenshot(f"results/jobroom_update_notfound_{index}.png")
+
+
+def _update_rejected_entry(driver, wait, notion, row, company, absagegrund, entry):
+    driver.execute_script(SCROLL_INTO_VIEW_SCRIPT, entry)
+    time.sleep(1)
+    _set_status_rejected(driver, entry)
+    _fill_absagegrund(driver, wait, entry, absagegrund)
+
+    input(f"\n   Review entry for {company}. Press Enter to confirm and continue...")
+
+    print(f"   ✅ Updated {company} to Absage")
+    _update_notion_tracked(notion, row["id"])
+
+
+def _update_notion_tracked(notion, page_id):
+    success = notion.update_row(
+        page_id=page_id,
+        properties={"Tracked": {"checkbox": True}},
+    )
+    if success:
+        print("   → Record processed")
+    else:
+        print("   → Failed to update Notion record. Please check Notion database.")
+
+
+def update_rejected_records(driver, wait, df, notion):
+    """Update existing entries that have been rejected.
+
+    Finds entries on the current work-efforts page that are still marked as
+    'Noch offen' and updates them to 'Absage' with the rejection reason.
+
+    Only processes records where:
+    - Stage == 'Rejected'
+    - Tracked ==  False (not yet processed)
+    - Last Update Date and Update Details are present
+
+    The Absagegrund field is filled with: "<DD.MM>: <reason>"
+
+    Args:
+        driver: Selenium WebDriver instance
+        wait: WebDriverWait instance
+        df: Dataframe with rejected records to update
+        notion: NotionHelper instance
+    """
+    driver.get(WEBSITE_URL + "work-efforts")
+    time.sleep(3)
+
+    _expand_month_section(driver, df)
+
+    for index, row in df.iterrows():
+        _process_rejected_entry(driver, wait, notion, row, index, len(df))
+
+
+def _entry_text(entry):
+    return entry.text.lower()
+
+
+def _matches_role(entry, role):
+    if not role:
+        return True
+
+    role_keyword = role.split()[0].lower()
+    return role_keyword in _entry_text(entry)
+
+
+def _find_entry_by_company(entries, company, role=None):
+    lower_company = company.lower()
+    for entry in entries:
+        if lower_company in _entry_text(entry):
+            return entry
+    return None
+
+
+def _find_entry_by_company_prefix(entries, company, role=None):
+    first_word = company.split()[0].lower() if company else ""
+    if not first_word:
+        return None
+
+    for entry in entries:
+        if first_word in _entry_text(entry):
+            return entry
+    return None
+
+
+def _find_exact_entry(entries, company, role):
+    lower_company = company.lower()
+    for entry in entries:
+        if lower_company not in _entry_text(entry):
+            continue
+        if _matches_role(entry, role):
+            return entry
+    return None
+
+
+def _get_entries(driver):
+    try:
+        return driver.find_elements(By.CSS_SELECTOR, ENTRY_SELECTOR)
+    except (NoSuchElementException, WebDriverException) as exc:
+        print(f"   ❌ Error finding entry rows: {exc}")
+        return []
+
+
+def _find_existing_entry(driver, company, role):
+    """Find an existing entry on the work-efforts page.
+
+    Job-Room renders each entry as an <alv-work-effort> component
+    containing a div.alv-cells with company name and role text.
+
+    Args:
+        driver: Selenium WebDriver instance
+        company: Company name to search for
+        role: Role/position title to search for
+
+    Returns:
+        WebElement of the matching alv-work-effort component, or None
+    """
+
+    entries = _get_entries(driver)
+    if not entries:
+        print("   ⚠️ No entry rows found on page")
+        return None
+
+    for finder in (
+        _find_exact_entry,
+        _find_entry_by_company,
+        _find_entry_by_company_prefix,
+    ):
+        entry = finder(entries, company, role)
+        if entry:
+            return entry
+
+    print(f"   ⚠️ No matching entry found among {len(entries)} entries")
+    return None
+
+
+def _find_absage_label(entry):
+    try:
+        return entry.find_element(By.CSS_SELECTOR, "label[for$='-REJECTED']")
+    except NoSuchElementException:
+        return entry.find_element(By.XPATH, ".//label[contains(text(), 'Absage')]")
+
+
+def _set_status_rejected(driver, entry):
+    """Click the 'Absage' radio button within a specific entry.
+
+    The radio button has an ID pattern: alv-radio-button-{N}-REJECTED
+    and the label has for="alv-radio-button-{N}-REJECTED".
+
+    Args:
+        driver: Selenium WebDriver instance
+        entry: The parent alv-work-effort WebElement
+    """
+    try:
+        absage_label = _find_absage_label(entry)
+        driver.execute_script(SCROLL_INTO_VIEW_SCRIPT, absage_label)
+        time.sleep(0.5)
+        driver.execute_script(EXECUTE_SCRIPT_CLICK, absage_label)
+        print("   ✓ Set status to Absage")
+    except (NoSuchElementException, WebDriverException) as exc:
+        print(f"   ❌ Could not find Absage radio button: {exc}")
+        traceback.print_exc()
+
+
+def _is_absagegrund_candidate(element):
+    el_id = element.get_attribute("id") or ""
+    if any(x in el_id.lower() for x in ["date", "company", "street", "phone", "email"]):
+        return False
+    return element.is_displayed()
+
+
+def _find_absagegrund_in_entry(entry):
+    selectors = ["textarea", "input[type='text']"]
+
+    for selector in selectors:
+        elements = entry.find_elements(By.CSS_SELECTOR, selector)
+        for el in elements:
+            if _is_absagegrund_candidate(el):
+                return el
+    return None
+
+
+def _find_absagegrund_fallback(wait):
+    return wait.until(
+        ec.presence_of_element_located(
+            (
+                By.XPATH,
+                "//textarea[contains(@id, 'reason')] | "
+                "//input[contains(@id, 'reason')] | "
+                "//textarea[contains(@id, 'rejection')] | "
+                "//input[contains(@id, 'rejection')]",
+            )
+        )
+    )
+
+
+def _fill_absagegrund(driver, wait, entry, absagegrund):
+    """Fill the Absagegrund (rejection reason) text field.
+
+    Args:
+        driver: Selenium WebDriver instance
+        wait: WebDriverWait instance
+        entry: The parent alv-work-effort WebElement
+        absagegrund: The formatted rejection reason string
+    """
+    time.sleep(1)  # Wait for the field to appear after radio click
+
+    try:
+        element = _find_absagegrund_in_entry(entry)
+        if element is None:
+            element = _find_absagegrund_fallback(wait)
+
+        driver.execute_script(SCROLL_INTO_VIEW_SCRIPT, element)
+        time.sleep(0.5)
+        element.clear()
+        element.send_keys(absagegrund)
+        print(f"   ✓ Filled Absagegrund → {absagegrund[:60]}...")
+    except (TimeoutException, NoSuchElementException, WebDriverException) as exc:
+        print(f"   ❌ Could not fill Absagegrund field: {exc}")
+        traceback.print_exc()
+
+
 def handle_login(driver):
     """Handle session restoration or manual login.
 
     Args:
         driver: Selenium WebDriver instance
-        wait: WebDriverWait instance
 
     Returns:
         Boolean indicating if logged in successfully
@@ -256,16 +620,16 @@ def handle_login(driver):
                 ".btn.btn-primary.d-none.d-lg-block.ng-star-inserted",
             ).click()
             time.sleep(3)
-        except Exception as e:
-            print(f"   Could not find Login button - already on login page?: {e}")
+        except NoSuchElementException as exc:
+            print(f"   Could not find Login button - already on login page?: {exc}")
 
         try:
             driver.find_element(
                 By.CSS_SELECTOR, "button[class*='idp-card small xtb-default']"
             ).click()
             time.sleep(3)
-        except Exception as e:
-            print(f"   Could not find AGOV button: {e}")
+        except NoSuchElementException as exc:
+            print(f"   Could not find AGOV button: {exc}")
 
         input("✅ Press Enter AFTER successful AGOV login and QR code scan...")
         save_session(driver)

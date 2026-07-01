@@ -14,6 +14,10 @@ DATABASE_ID = os.environ["DATABASE_ID"]
 # Website selectors
 WEBSITE_URL = os.environ["WEBSITE_URL"]
 
+APPLIED_DATE = "Applied date"
+EXIT_MESSAGE = "     Exiting...\n"
+SCROLL_INTO_VIEW_SCRIPT = "arguments[0].scrollIntoView({block: 'center'});"
+
 FIELD_SELECTORS = {
     "Date": "input[id*='date']",
     "Type": "dummy",  # This will be overridden in code
@@ -36,3 +40,11 @@ FIELD_SELECTORS = {
 COOKIES_FILE = "cookies/jobroom_cookies.json"
 
 EXECUTE_SCRIPT_CLICK = "arguments[0].click();"
+
+# Selectors for updating an existing entry's status to "Absage"
+REJECTION_SELECTORS = {
+    "status_radio_absage": "label[for*='radio-button-'][for$='REJECTED']",
+    "absagegrund_input": "textarea[id*='rejection-reason']",
+}
+
+ENTRY_SELECTOR = "alv-work-effort"

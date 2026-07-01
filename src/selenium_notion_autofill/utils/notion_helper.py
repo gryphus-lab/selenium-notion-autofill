@@ -97,14 +97,10 @@ class NotionHelper:
             if res.status_code == 200:
                 print(f"   ✅ Notion row updated successfully (ID: {page_id[:8]}...)")
                 return True
-            else:
-                print(
-                    f"   ❌ Failed to update Notion row: {res.status_code} - {res.text}"
-                )
-                return False
-
-        except Exception as e:
-            print(f"   ❌ Exception while updating Notion row: {e}")
+            print(f"   ❌ Failed to update Notion row: {res.status_code} - {res.text}")
+            return False
+        except httpx.RequestError as exc:
+            print(f"   ❌ Exception while updating Notion row: {exc}")
             return False
 
     def _get_property_value(self, prop: Any) -> Any:
@@ -145,4 +141,6 @@ class NotionHelper:
             print(f"prop_type: {prop_type}, return value: {retval} ")
             return retval
 
-        return str(prop.get(prop_type, ""))
+        if isinstance(prop_type, str):
+            return str(prop.get(prop_type, ""))
+        return ""
