@@ -22,11 +22,16 @@ from selenium_notion_autofill.utils.session_helper import load_session, save_ses
 
 
 def get_notion_scalar_value(value):
-    """Extract scalar value from simple Notion value wrappers."""
+    """Extract scalar value from simple Notion value wrappers.
+    
+    Only extracts if the value type is 'string'. Otherwise returns the dict as-is.
+    """
     if isinstance(value, dict):
         value_type = value.get("type")
-        if isinstance(value_type, str) and value_type in value:
-            return value.get(value_type)
+        # Only extract if type is explicitly 'string'
+        if value_type == "string" and "string" in value:
+            return value.get("string")
+        # For other types (rich_text, etc.), return the whole dict
         return value
 
     if isinstance(value, str) and value.startswith("{"):
@@ -221,8 +226,9 @@ def process_records(driver, wait, df, notion):
     driver.get(WEBSITE_URL + "work-efforts")
     time.sleep(3)
 
+    total_records = len(df) if hasattr(df, '__len__') else sum(1 for _ in df.iterrows())
     for index, row in df.iterrows():
-        print(f"\nProcessing {index + 1}/{len(df)}: {row.get('Role', 'N/A')}")
+        print(f"\nProcessing {index + 1}/{total_records}: {row.get('Role', 'N/A')}")
 
         driver.find_element(
             By.CSS_SELECTOR,
@@ -246,7 +252,6 @@ def process_records(driver, wait, df, notion):
             print("   → Record processed")
         else:
             print("   → Failed to update Notion record. Please check Notion database.")
-
 
 def _get_month_year_pairs(df):
     if df is None or df.empty:

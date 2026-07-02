@@ -43,8 +43,13 @@ def extract_formatted_field(val):
     Returns:
         The extracted string value or original value if extraction fails
     """
+    if val is None:
+        return val
     try:
-        return ast.literal_eval(str(val)).get("string")
+        parsed = ast.literal_eval(str(val))
+        if isinstance(parsed, dict):
+            return parsed.get("string")
+        return val
     except (ValueError, SyntaxError, TypeError):
         return val
 

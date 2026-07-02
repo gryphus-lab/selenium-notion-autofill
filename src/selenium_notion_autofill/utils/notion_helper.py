@@ -116,7 +116,7 @@ class NotionHelper:
             return None
 
         def _plain_text_list(values: List[Dict[str, Any]]) -> str:
-            return " ".join([t.get("plain_text", "") for t in values]).strip()
+            return "".join([t.get("plain_text", "") for t in values]).strip()
 
         type_handlers = {
             "title": lambda p: _plain_text_list(p.get("title", [])),

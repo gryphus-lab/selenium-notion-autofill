@@ -37,7 +37,9 @@ def _delete_old_session():
 
 def save_session(driver):
     """Save both cookies and localStorage/sessionStorage + mark as today's session"""
-    Path("cookies").mkdir(exist_ok=True)
+    # Create parent directory for COOKIES_FILE
+    cookies_path = Path(COOKIES_FILE)
+    cookies_path.parent.mkdir(exist_ok=True, parents=True)
 
     # Save cookies
     cookies = driver.get_cookies()
