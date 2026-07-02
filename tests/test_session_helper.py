@@ -254,6 +254,8 @@ def test_restore_storage_handles_missing_keys(tmp_path, monkeypatch):
     session_helper._restore_storage(d)
     # Should have called setItem for localStorage only
     assert any("localStorage" in r[0] for r in recorded)
+    # Should NOT have called setItem for sessionStorage (key missing from data)
+    assert not any("sessionStorage" in r[0] for r in recorded)
 
 
 def test_load_session_with_corrupted_json(tmp_path, monkeypatch):
