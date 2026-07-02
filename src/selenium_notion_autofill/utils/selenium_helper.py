@@ -24,14 +24,13 @@ from selenium_notion_autofill.utils.session_helper import load_session, save_ses
 def get_notion_scalar_value(value):
     """Extract scalar value from simple Notion value wrappers.
 
-    Only extracts if the value type is 'string'. Otherwise returns the dict as-is.
+    For type 'string', extracts the string value.
+    For other types, extracts the value at the key matching the type.
     """
     if isinstance(value, dict):
         value_type = value.get("type")
-        # Only extract if type is explicitly 'string'
-        if value_type == "string" and "string" in value:
-            return value.get("string")
-        # For other types (rich_text, etc.), return the whole dict
+        if isinstance(value_type, str) and value_type in value:
+            return value.get(value_type)
         return value
 
     if isinstance(value, str) and value.startswith("{"):
