@@ -104,6 +104,8 @@ def test_prepare_dataframe_transforms_columns():
     assert df["Type"].iloc[0] == "electronic"
     assert df["PLZ_Ort"].iloc[0] == "1234"
     assert df["RAV"].iloc[0] == "false"
+    assert df["Arbeitspensum"].iloc[0] == "false"
+    assert df["Status"].iloc[0] == "false"
 
 
 def test_create_driver_builds_driver_and_wait(monkeypatch):

@@ -426,6 +426,7 @@ def test_handle_login_falls_back_to_fresh_login(monkeypatch):
     monkeypatch.setattr(selenium_helper, "load_session", lambda driver: True)
     monkeypatch.setattr(selenium_helper, "save_session", lambda driver: None)
     monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
 
     class Driver:
         def __init__(self):
