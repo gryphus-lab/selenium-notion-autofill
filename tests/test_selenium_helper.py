@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from selenium.common.exceptions import TimeoutException
+
 from selenium_notion_autofill.utils import selenium_helper
 
 
@@ -317,4 +319,126 @@ def test_update_notion_tracked_prints_status(monkeypatch):
     assert any(
         "Failed to update Notion record." in item for args in printed for item in args
     )
+
+
+def test_fill_typeahead_supports_suggestion_and_enter(monkeypatch):
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    class Elem:
+        def __init__(self):
+            self.values = []
+            self._displayed = True
+
+        def is_displayed(self):
+            return self._displayed
+
+        def send_keys(self, value):
+            self.values.append(value)
+
+        def get_attribute(self, key):
+            return "" if key != "value" else "Developer"
+
+    class Suggestion:
+        def click(self):
+            self.clicked = True
+
+    class Wait:
+        def __init__(self, mode):
+            self.mode = mode
+
+        def until(self, arg):
+            if self.mode == "suggestion":
+                return Suggestion()
+            raise TimeoutException("timeout")
+
+    driver = SimpleNamespace(execute_script=lambda *args, **kwargs: None)
+    element = Elem()
+    selenium_helper.fill_typeahead(driver, Wait("suggestion"), element, "Role", "Developer")
+    assert element.values == ["Developer"]
+
+    fallback_element = Elem()
+    selenium_helper.fill_typeahead(
+        driver, Wait("timeout"), fallback_element, "Role", "Developer"
+    )
+    assert fallback_element.values[-1] == selenium_helper.Keys.ENTER
+
+
+def test_expand_month_section_and_process_rejected_entry(monkeypatch):
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    class FakeElement:
+        def __init__(self, text=""):
+            self.text = text
+
+    class Driver:
+        def __init__(self):
+            self.scripts = []
+            self.find_calls = []
+
+        def find_elements(self, by, selector):
+            self.find_calls.append(selector)
+            if "collapsed" in selector:
+                return [FakeElement()]
+            return []
+
+        def execute_script(self, *args, **kwargs):
+            self.scripts.append(args)
+
+    class FakeRow:
+        def __init__(self):
+            self._values = {
+                "Company": "Acme",
+                "Role": "Developer",
+                "Last Update Date": "2026-07-01",
+                "Update Details": "No fit",
+            }
+
+        def get(self, key, default=None):
+            return self._values.get(key, default)
+
+    driver = Driver()
+    df = SimpleNamespace(empty=False, get=lambda key, default=None: ["2026-07-01"])
+    selenium_helper._expand_month_section(driver, df)
+    assert driver.scripts
+
+    called = {}
+    monkeypatch.setattr(
+        selenium_helper,
+        "_find_existing_entry",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        selenium_helper,
+        "_update_rejected_entry",
+        lambda *args, **kwargs: called.setdefault("updated", True),
+    )
+    monkeypatch.setattr(
+        selenium_helper,
+        "_report_missing_entry",
+        lambda *args, **kwargs: called.setdefault("missing", True),
+    )
+
+    selenium_helper._process_rejected_entry(driver, None, None, FakeRow(), 0, 1)
+    assert called.get("updated") is True
+
+
+def test_handle_login_falls_back_to_fresh_login(monkeypatch):
+    monkeypatch.setattr(selenium_helper, "load_session", lambda driver: True)
+    monkeypatch.setattr(selenium_helper, "save_session", lambda driver: None)
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
+
+    class Driver:
+        def __init__(self):
+            self.current_url = "https://example.com/login"
+            self.visited = []
+
+        def get(self, url):
+            self.visited.append(url)
+
+        def find_element(self, by, selector):
+            return SimpleNamespace(click=lambda: None)
+
+    driver = Driver()
+    assert selenium_helper.handle_login(driver) is True
+    assert driver.visited[0] == selenium_helper.WEBSITE_URL
 
