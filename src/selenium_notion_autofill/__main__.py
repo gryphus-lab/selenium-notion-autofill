@@ -232,9 +232,7 @@ def _run_update_rejections(notion):
 
     # Filter to only those with Update Details (rejection reason)
     df = df[
-        df["Update Details"].apply(
-            lambda x: pd.notna(x) and str(x).strip() != ""
-        )
+        df["Update Details"].apply(lambda x: pd.notna(x) and str(x).strip() != "")
     ].reset_index(drop=True)
 
     if df.empty:

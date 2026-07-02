@@ -23,7 +23,7 @@ from selenium_notion_autofill.utils.session_helper import load_session, save_ses
 
 def get_notion_scalar_value(value):
     """Extract scalar value from simple Notion value wrappers.
-    
+
     Only extracts if the value type is 'string'. Otherwise returns the dict as-is.
     """
     if isinstance(value, dict):
@@ -226,7 +226,7 @@ def process_records(driver, wait, df, notion):
     driver.get(WEBSITE_URL + "work-efforts")
     time.sleep(3)
 
-    total_records = len(df) if hasattr(df, '__len__') else sum(1 for _ in df.iterrows())
+    total_records = len(df) if hasattr(df, "__len__") else sum(1 for _ in df.iterrows())
     for index, row in df.iterrows():
         print(f"\nProcessing {index + 1}/{total_records}: {row.get('Role', 'N/A')}")
 
@@ -252,6 +252,7 @@ def process_records(driver, wait, df, notion):
             print("   → Record processed")
         else:
             print("   → Failed to update Notion record. Please check Notion database.")
+
 
 def _get_month_year_pairs(df):
     if df is None or df.empty:
