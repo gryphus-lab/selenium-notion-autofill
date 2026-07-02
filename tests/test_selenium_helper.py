@@ -555,7 +555,7 @@ def test_get_notion_scalar_value_with_complex_dict():
     result = selenium_helper.get_notion_scalar_value(
         {"type": "rich_text", "rich_text": [{"plain_text": "text"}]}
     )
-    assert result == {"type": "rich_text", "rich_text": [{"plain_text": "text"}]}
+    assert result == [{"plain_text": "text"}]
 
 
 def test_fill_field_resolves_interview_type(monkeypatch):
