@@ -178,3 +178,125 @@ def test_load_session_fails_with_stale_session_info(tmp_path, monkeypatch):
     assert not cookies_file.exists()
     assert not storage_file.exists()
     assert not info_file.exists()
+
+
+def test_save_session_creates_directory_if_not_exists(tmp_path, monkeypatch):
+    """Test that save_session creates cookies directory."""
+    cookies_dir = tmp_path / "session_cookies"
+    cookies_file = cookies_dir / "jobroom_cookies.json"
+
+    monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(tmp_path / "storage.json"))
+
+    driver = DummyDriver()
+    session_helper.save_session(driver)
+
+    assert cookies_file.exists()
+
+
+def test_apply_cookies_keeps_important_attributes(monkeypatch):
+    """Test _apply_cookies preserves important cookie attributes."""
+    driver = DummyDriver()
+    cookies = [
+        {
+            "name": "test",
+            "value": "val",
+            "domain": "example.com",
+            "path": "/",
+            "secure": True,
+            "sameSite": "Strict",
+        }
+    ]
+
+    session_helper._apply_cookies(driver, cookies)
+
+    assert len(driver.added) == 1
+    added_cookie = driver.added[0]
+    assert added_cookie["name"] == "test"
+    assert added_cookie["value"] == "val"
+    assert "sameSite" not in added_cookie
+
+
+def test_restore_storage_with_empty_storage(tmp_path, monkeypatch):
+    """Test _restore_storage with empty storage file."""
+    storage_file = tmp_path / "storage.json"
+    storage_file.write_text(json.dumps({"localStorage": {}, "sessionStorage": {}}))
+
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(storage_file))
+
+    recorded = []
+
+    class Driver:
+        def execute_script(self, script, *args):
+            recorded.append((script, args))
+
+    d = Driver()
+    session_helper._restore_storage(d)
+    # No items to set means no execute_script calls
+    assert len(recorded) == 0
+
+
+def test_restore_storage_handles_missing_keys(tmp_path, monkeypatch):
+    """Test _restore_storage handles missing storage keys gracefully."""
+    storage_file = tmp_path / "storage.json"
+    # Only localStorage, no sessionStorage
+    storage_file.write_text(json.dumps({"localStorage": {"key": "value"}}))
+
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(storage_file))
+
+    recorded = []
+
+    class Driver:
+        def execute_script(self, script, *args):
+            recorded.append((script, args))
+
+    d = Driver()
+    session_helper._restore_storage(d)
+    # Should have called setItem for localStorage only
+    assert any("localStorage" in r[0] for r in recorded)
+
+
+def test_load_session_with_corrupted_json(tmp_path, monkeypatch):
+    """Test load_session handles corrupted JSON gracefully."""
+    cookies_file = tmp_path / "cookies.json"
+    storage_file = tmp_path / "storage.json"
+
+    cookies_file.write_text("not valid json {")
+    storage_file.write_text(json.dumps({}))
+
+    monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(storage_file))
+
+    driver = DummyDriver()
+    # Should handle JSON error gracefully
+    result = session_helper.load_session(driver)
+    # Will fail but shouldn't crash
+    assert result is False
+
+
+def test_save_session_with_multiple_storages(tmp_path, monkeypatch):
+    """Test save_session with both localStorage and sessionStorage."""
+    cookies_file = tmp_path / "cookies.json"
+    storage_file = tmp_path / "storage.json"
+
+    monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(storage_file))
+
+    class Driver:
+        def get_cookies(self):
+            return [{"name": "c1", "value": "v1"}]
+
+        def execute_script(self, script, *args):
+            if "localStorage" in script:
+                return {"ls_key": "ls_val"}
+            if "sessionStorage" in script:
+                return {"ss_key": "ss_val"}
+            return None
+
+    driver = Driver()
+    session_helper.save_session(driver)
+
+    with open(storage_file, "r") as f:
+        data = json.load(f)
+    assert "localStorage" in data
+    assert "sessionStorage" in data

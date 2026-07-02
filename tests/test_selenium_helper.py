@@ -443,3 +443,214 @@ def test_handle_login_falls_back_to_fresh_login(monkeypatch):
     assert selenium_helper.handle_login(driver) is True
     assert driver.visited[0] == selenium_helper.WEBSITE_URL
 
+
+def test_handle_login_fresh_login_with_buttons(monkeypatch):
+    """Test handle_login when session is not restored and buttons are found."""
+    monkeypatch.setattr(selenium_helper, "load_session", lambda driver: False)
+    monkeypatch.setattr(selenium_helper, "save_session", lambda driver: None)
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    class Driver:
+        def __init__(self):
+            self.current_url = "https://example.com"
+            self.visited = []
+            self.find_calls = []
+
+        def get(self, url):
+            self.visited.append(url)
+
+        def find_element(self, by, selector):
+            self.find_calls.append(selector)
+            return SimpleNamespace(click=lambda: None)
+
+    driver = Driver()
+    result = selenium_helper.handle_login(driver)
+    assert result is True
+    assert len(driver.find_calls) >= 1
+
+
+def test_handle_login_missing_buttons(monkeypatch):
+    """Test handle_login when buttons are not found."""
+    monkeypatch.setattr(selenium_helper, "load_session", lambda driver: False)
+    monkeypatch.setattr(selenium_helper, "save_session", lambda driver: None)
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    class Driver:
+        def __init__(self):
+            self.current_url = "https://example.com"
+
+        def get(self, url):
+            pass
+
+        def find_element(self, by, selector):
+            raise selenium_helper.NoSuchElementException("not found")
+
+    driver = Driver()
+    result = selenium_helper.handle_login(driver)
+    assert result is True
+
+
+def test_process_records_flow(monkeypatch):
+    """Test process_records iterates and fills fields."""
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+    monkeypatch.setattr("builtins.input", lambda *args, **kwargs: "")
+
+    fill_calls = []
+
+    def fake_fill(driver, wait, field_name, selector, value, row=None):
+        fill_calls.append((field_name, selector, value))
+
+    monkeypatch.setattr(selenium_helper, "fill_field", fake_fill)
+
+    class Driver:
+        def __init__(self):
+            self.visited = []
+
+        def get(self, url):
+            self.visited.append(url)
+
+        def find_element(self, by, selector):
+            return SimpleNamespace(click=lambda: None)
+
+    class Notion:
+        def update_row(self, page_id, properties):
+            return True
+
+    driver = Driver()
+    df = SimpleNamespace(
+        iterrows=lambda: [
+            (
+                0,
+                {
+                    "id": "page1",
+                    "Role": "Engineer",
+                    "Company": "Acme",
+                },
+            )
+        ]
+    )
+    selenium_helper.process_records(driver, None, df, Notion())
+    assert len(fill_calls) > 0
+
+
+def test_resolve_type_selector_case_insensitive():
+    """Test resolve_type_selector handles case variations."""
+    assert selenium_helper.resolve_type_selector("ELECTRONIC") is not None
+    assert selenium_helper.resolve_type_selector("Phone") is not None
+    assert selenium_helper.resolve_type_selector("VORSTELLUNGSGESPRÄCH") is not None
+
+
+def test_resolve_type_selector_dict_with_string():
+    """Test resolve_type_selector with dict containing string key."""
+    result = selenium_helper.resolve_type_selector(
+        {"type": "string", "string": "vorstellungsgespräch"}
+    )
+    assert "Vorstellungsgespräch" in result
+
+
+def test_get_notion_scalar_value_with_complex_dict():
+    """Test get_notion_scalar_value with nested dict."""
+    result = selenium_helper.get_notion_scalar_value(
+        {"type": "rich_text", "rich_text": [{"plain_text": "text"}]}
+    )
+    assert result == {"type": "rich_text", "rich_text": [{"plain_text": "text"}]}
+
+
+def test_fill_field_resolves_interview_type(monkeypatch):
+    """Test fill_field correctly handles Interview field type."""
+    waited = []
+    executed = []
+
+    class Wait:
+        def until(self, arg):
+            waited.append(arg)
+            return SimpleNamespace(is_displayed=lambda: True)
+
+    class Driver:
+        def execute_script(self, script, elem):
+            executed.append(script)
+
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    selenium_helper.fill_field(
+        Driver(),
+        Wait(),
+        "Interview",
+        "dummy",
+        "vorstellungsgespräch",
+        row={},
+    )
+    assert waited
+    assert executed
+
+
+def test_expand_month_section_for_each_month(monkeypatch):
+    """Test _expand_month_section_for handles all month names."""
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    calls = []
+
+    class Driver:
+        def find_elements(self, by, selector):
+            calls.append(selector)
+            return [SimpleNamespace(scrollIntoView=lambda: None)]
+
+        def execute_script(self, script, elem=None):
+            pass
+
+    driver = Driver()
+    # Test multiple months
+    for month in ["Januar", "Februar", "März", "April", "Mai", "Juni"]:
+        calls.clear()
+        selenium_helper._expand_month_section_for(driver, month, "2024")
+        assert calls
+
+
+def test_find_entry_with_no_entries_returns_none():
+    """Test _find_existing_entry when no entries exist."""
+    class Driver:
+        def find_elements(self, by, selector):
+            return []
+
+    result = selenium_helper._find_existing_entry(Driver(), "Acme", "Developer")
+    assert result is None
+
+
+def test_find_entry_by_company_with_empty_entries():
+    """Test _find_entry_by_company with empty list."""
+    result = selenium_helper._find_entry_by_company([], "Acme", "Developer")
+    assert result is None
+
+
+def test_find_entry_by_company_prefix_with_empty_company():
+    """Test _find_entry_by_company_prefix with empty company name."""
+    result = selenium_helper._find_entry_by_company_prefix([], "", "Developer")
+    assert result is None
+
+
+def test_format_absagegrund_with_invalid_date():
+    """Test _format_absagegrund gracefully handles invalid dates."""
+    result = selenium_helper._format_absagegrund("not-a-date", "Reason")
+    assert "Reason" in result
+
+
+def test_set_status_rejected_uses_fallback_xpath(monkeypatch):
+    """Test _set_status_rejected falls back to XPath."""
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    script_calls = []
+
+    class Driver:
+        def execute_script(self, script, elem):
+            script_calls.append(script)
+
+    class Entry:
+        def find_element(self, by, selector):
+            raise selenium_helper.NoSuchElementException("Not found")
+
+    driver = Driver()
+    result = selenium_helper._set_status_rejected(driver, Entry())
+    assert result is False
+

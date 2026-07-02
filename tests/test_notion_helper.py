@@ -157,3 +157,188 @@ def test_update_row_returns_false_on_request_error(monkeypatch, notion_helper):
     monkeypatch.setattr("selenium_notion_autofill.utils.notion_helper.httpx.patch", fake_patch)
 
     assert notion_helper.update_row("page-1", {"Tracked": {"checkbox": True}}) is False
+
+
+def test_get_property_value_with_none_values():
+    """Test _get_property_value handles None gracefully."""
+    notion_helper = NotionHelper("test_api_key")
+    assert notion_helper._get_property_value(None) is None
+    assert notion_helper._get_property_value({}) is None
+
+
+def test_get_property_value_select(notion_helper):
+    """Test extracting select property value."""
+    prop = {
+        "type": "select",
+        "select": {"name": "In Progress"},
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == "In Progress"
+
+
+def test_get_property_value_select_null(notion_helper):
+    """Test extracting select when no select is set."""
+    prop = {
+        "type": "select",
+        "select": None,
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == ""
+
+
+def test_get_property_value_multi_select(notion_helper):
+    """Test extracting multi_select property value."""
+    prop = {
+        "type": "multi_select",
+        "multi_select": [{"name": "tag1"}, {"name": "tag2"}],
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == ["tag1", "tag2"]
+
+
+def test_get_property_value_number(notion_helper):
+    """Test extracting number property value."""
+    prop = {
+        "type": "number",
+        "number": 42,
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == 42
+
+
+def test_get_property_value_url(notion_helper):
+    """Test extracting url property value."""
+    prop = {
+        "type": "url",
+        "url": "https://example.com",
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == "https://example.com"
+
+
+def test_get_property_value_phone_number(notion_helper):
+    """Test extracting phone_number property value."""
+    prop = {
+        "type": "phone_number",
+        "phone_number": "+41123456789",
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == "+41123456789"
+
+
+def test_get_property_value_rich_text(notion_helper):
+    """Test extracting rich_text property value."""
+    prop = {
+        "type": "rich_text",
+        "rich_text": [
+            {"plain_text": "Hello"},
+            {"plain_text": " "},
+            {"plain_text": "World"},
+        ],
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == "Hello World"
+
+
+def test_get_property_value_date_with_end(notion_helper):
+    """Test extracting date property with end date."""
+    prop = {
+        "type": "date",
+        "date": {"start": "2024-01-15", "end": "2024-01-20"},
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == "2024-01-15"
+
+
+def test_get_property_value_title_empty(notion_helper):
+    """Test extracting title when empty."""
+    prop = {
+        "type": "title",
+        "title": [],
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == ""
+
+
+def test_get_property_value_unknown_type(notion_helper):
+    """Test extracting property with unknown type."""
+    prop = {
+        "type": "custom_type",
+        "custom_type": "value",
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == "value"
+
+
+def test_get_database_data_with_http_error(monkeypatch, notion_helper):
+    """Test get_database_data handles HTTP errors."""
+
+    class BadResponse:
+        def __init__(self):
+            self.status_code = 401
+            self.text = "Unauthorized"
+            self.request = Mock()
+
+    def fake_post(*args, **kwargs):
+        return BadResponse()
+
+    monkeypatch.setattr("selenium_notion_autofill.utils.notion_helper.httpx.post", fake_post)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        notion_helper.get_database_data("db-id")
+
+
+def test_get_database_data_with_filter(monkeypatch, notion_helper):
+    """Test get_database_data applies filter correctly."""
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+            self.status_code = 200
+            self.text = "ok"
+            self.request = Mock()
+
+        def json(self):
+            return self._payload
+
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=30):
+        calls.append(json)
+        return FakeResponse({"results": [], "has_more": False})
+
+    monkeypatch.setattr("selenium_notion_autofill.utils.notion_helper.httpx.post", fake_post)
+
+    test_filter = {"property": "Status", "select": {"equals": "Done"}}
+    notion_helper.get_database_data("db-id", filter=test_filter)
+
+    assert len(calls) == 1
+    assert calls[0]["filter"] == test_filter
+
+
+def test_update_row_with_successful_response(monkeypatch, notion_helper):
+    """Test update_row with successful response."""
+
+    class FakeResponse:
+        def __init__(self):
+            self.status_code = 200
+            self.text = "ok"
+            self.request = Mock()
+
+    def fake_patch(*args, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setattr("selenium_notion_autofill.utils.notion_helper.httpx.patch", fake_patch)
+
+    result = notion_helper.update_row("page-1", {"Status": {"select": {"name": "Done"}}})
+    assert result is True
+
+
+def test_get_property_value_with_invalid_type(notion_helper):
+    """Test _get_property_value with non-string type."""
+    prop = {
+        "type": 123,  # Invalid type
+        "123": "value",
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == ""
