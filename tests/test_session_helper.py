@@ -238,6 +238,8 @@ def test_restore_storage_with_empty_storage(tmp_path, monkeypatch):
 
 def test_restore_storage_handles_missing_keys(tmp_path, monkeypatch):
     """Test _restore_storage handles missing storage keys gracefully."""
+def test_restore_storage_handles_missing_keys(tmp_path, monkeypatch):
+    """Test _restore_storage handles missing storage keys gracefully."""
     storage_file = tmp_path / "storage.json"
     # Only localStorage, no sessionStorage
     storage_file.write_text(json.dumps({"localStorage": {"key": "value"}}))
@@ -254,9 +256,7 @@ def test_restore_storage_handles_missing_keys(tmp_path, monkeypatch):
     session_helper._restore_storage(d)
     # Should have called setItem for localStorage only
     assert any("localStorage" in r[0] for r in recorded)
-    # Should NOT have called setItem for sessionStorage (key missing from data)
     assert not any("sessionStorage" in r[0] for r in recorded)
-
 
 def test_load_session_with_corrupted_json(tmp_path, monkeypatch):
     """Test load_session handles corrupted JSON gracefully."""
