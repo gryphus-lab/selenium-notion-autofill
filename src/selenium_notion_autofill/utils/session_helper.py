@@ -35,11 +35,18 @@ def _delete_old_session():
                 print(f"   ⚠️ Could not delete {file_path}: {e}")
 
 
+def _ensure_directory_exists(file_path):
+    """Ensure parent directory exists for a file path."""
+    path = Path(file_path)
+    path.parent.mkdir(exist_ok=True, parents=True)
+
+
 def save_session(driver):
     """Save both cookies and localStorage/sessionStorage + mark as today's session"""
-    # Create parent directory for COOKIES_FILE
-    cookies_path = Path(COOKIES_FILE)
-    cookies_path.parent.mkdir(exist_ok=True, parents=True)
+    # Create parent directories for all files
+    _ensure_directory_exists(COOKIES_FILE)
+    _ensure_directory_exists(STORAGE_FILE)
+    _ensure_directory_exists(SESSION_INFO_FILE)
 
     # Save cookies
     cookies = driver.get_cookies()
