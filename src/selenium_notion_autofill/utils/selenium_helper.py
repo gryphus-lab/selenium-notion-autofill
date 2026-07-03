@@ -22,7 +22,11 @@ from selenium_notion_autofill.utils.session_helper import load_session, save_ses
 
 
 def get_notion_scalar_value(value):
-    """Extract scalar value from simple Notion value wrappers."""
+    """Extract scalar value from simple Notion value wrappers.
+
+    For type 'string', extracts the string value.
+    For other types, extracts the value at the key matching the type.
+    """
     if isinstance(value, dict):
         value_type = value.get("type")
         if isinstance(value_type, str) and value_type in value:
@@ -149,7 +153,12 @@ def _resolve_element(wait, field_name, selector, value, row=None):
         if selector is None:
             return None
         print(f"   → Setting Type to: {str(value).strip().lower()}")
-        return wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, selector)))
+        locator = (
+            (By.XPATH, selector)
+            if selector.startswith("//")
+            else (By.CSS_SELECTOR, selector)
+        )
+        return wait.until(ec.presence_of_element_located(locator))
 
     return wait.until(ec.presence_of_element_located((By.CSS_SELECTOR, selector)))
 
@@ -216,8 +225,9 @@ def process_records(driver, wait, df, notion):
     driver.get(WEBSITE_URL + "work-efforts")
     time.sleep(3)
 
+    total_records = len(df) if hasattr(df, "__len__") else sum(1 for _ in df.iterrows())
     for index, row in df.iterrows():
-        print(f"\nProcessing {index + 1}/{len(df)}: {row.get('Role', 'N/A')}")
+        print(f"\nProcessing {index + 1}/{total_records}: {row.get('Role', 'N/A')}")
 
         driver.find_element(
             By.CSS_SELECTOR,
@@ -243,6 +253,34 @@ def process_records(driver, wait, df, notion):
             print("   → Failed to update Notion record. Please check Notion database.")
 
 
+def _get_month_year_pairs(df):
+    if df is None or df.empty:
+        return []
+
+    month_pairs = []
+    for value in df.get("Applied date", []):
+        if value is None:
+            continue
+
+        date_text = str(value).strip()
+        if not date_text:
+            continue
+
+        date_parts = date_text.split("-")
+        if len(date_parts) < 2:
+            continue
+
+        try:
+            year = date_parts[0]
+            month_num = int(date_parts[1])
+        except ValueError:
+            continue
+
+        month_pairs.append((year, month_num))
+
+    return list(dict.fromkeys(month_pairs))
+
+
 def _expand_month_section(driver, df):
     """Expand the month section on the work-efforts page.
 
@@ -253,18 +291,11 @@ def _expand_month_section(driver, df):
         driver: Selenium WebDriver instance
         df: Dataframe containing records (uses Applied date to determine month)
     """
-    # Determine the target month from the first record's Applied date
-    first_date = str(df.iloc[0].get("Applied date", ""))
-    if not first_date:
+    month_pairs = _get_month_year_pairs(df)
+    if not month_pairs:
         return
 
     try:
-        # Parse month/year from the applied date (format: YYYY-MM-DD)
-        date_parts = first_date.split("-")
-        year = date_parts[0]
-        month_num = int(date_parts[1])
-
-        # German month names as used on Job-Room
         month_names = {
             1: "Januar",
             2: "Februar",
@@ -279,46 +310,50 @@ def _expand_month_section(driver, df):
             11: "November",
             12: "Dezember",
         }
-        month_name = month_names.get(month_num, "")
 
-        # Try to find and click the month section header
-        # Look for a collapsed section containing the month name
-        section_xpath = (
-            f"//button[contains(@class, 'collapsed')]"
-            f"[contains(., '{month_name}') and contains(., '{year}')]"
-            f" | "
-            f"//a[contains(@class, 'collapsed')]"
-            f"[contains(., '{month_name}') and contains(., '{year}')]"
-            f" | "
-            f"//div[contains(@class, 'collapsed')]"
-            f"[contains(., '{month_name}') and contains(., '{year}')]"
-        )
-
-        sections = driver.find_elements(By.XPATH, section_xpath)
-        if sections:
-            driver.execute_script(
-                "arguments[0].scrollIntoView({block: 'center'});", sections[0]
-            )
-            time.sleep(0.5)
-            driver.execute_script(EXECUTE_SCRIPT_CLICK, sections[0])
-            time.sleep(2)
-            print(f"   ✓ Expanded section: {month_name} {year}")
-        else:
-            # Section might already be expanded or use different structure
-            # Try clicking any element with the month name
-            expanded_xpath = (
-                f"//button[contains(., '{month_name}') and contains(., '{year}')]"
-                f" | "
-                f"//a[contains(., '{month_name}') and contains(., '{year}')]"
-            )
-            expanded = driver.find_elements(By.XPATH, expanded_xpath)
-            if expanded:
-                print(f"   ✓ Section already expanded: {month_name} {year}")
-            else:
-                print(f"   ⚠️ Could not find month section for {month_name} {year}")
+        for year, month_num in month_pairs:
+            month_name = month_names.get(month_num, "")
+            if not month_name:
+                continue
+            _expand_month_section_for(driver, month_name, year)
 
     except (ValueError, IndexError, NoSuchElementException, WebDriverException) as e:
         print(f"   ⚠️ Error expanding month section: {e}")
+
+
+def _expand_month_section_for(driver, month_name, year):
+    section_xpath = (
+        f"//button[contains(@class, 'collapsed')]"
+        f"[contains(., '{month_name}') and contains(., '{year}')]"
+        f" | "
+        f"//a[contains(@class, 'collapsed')]"
+        f"[contains(., '{month_name}') and contains(., '{year}')]"
+        f" | "
+        f"//div[contains(@class, 'collapsed')]"
+        f"[contains(., '{month_name}') and contains(., '{year}')]"
+    )
+
+    sections = driver.find_elements(By.XPATH, section_xpath)
+    if sections:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});", sections[0]
+        )
+        time.sleep(0.5)
+        driver.execute_script(EXECUTE_SCRIPT_CLICK, sections[0])
+        time.sleep(2)
+        print(f"   ✓ Expanded section: {month_name} {year}")
+        return
+
+    expanded_xpath = (
+        f"//button[contains(., '{month_name}') and contains(., '{year}')]"
+        f" | "
+        f"//a[contains(., '{month_name}') and contains(., '{year}')]"
+    )
+    expanded = driver.find_elements(By.XPATH, expanded_xpath)
+    if expanded:
+        print(f"   ✓ Section already expanded: {month_name} {year}")
+    else:
+        print(f"   ⚠️ Could not find month section for {month_name} {year}")
 
 
 def _format_absagegrund(update_date, update_details):
@@ -373,8 +408,11 @@ def _report_missing_entry(driver, index, company):
 def _update_rejected_entry(driver, wait, notion, row, company, absagegrund, entry):
     driver.execute_script(SCROLL_INTO_VIEW_SCRIPT, entry)
     time.sleep(1)
-    _set_status_rejected(driver, entry)
-    _fill_absagegrund(driver, wait, entry, absagegrund)
+
+    if not _set_status_rejected(driver, entry):
+        return
+    if not _fill_absagegrund(driver, wait, entry, absagegrund):
+        return
 
     input(f"\n   Review entry for {company}. Press Enter to confirm and continue...")
 
@@ -436,7 +474,7 @@ def _matches_role(entry, role):
 def _find_entry_by_company(entries, company, role=None):
     lower_company = company.lower()
     for entry in entries:
-        if lower_company in _entry_text(entry):
+        if lower_company in _entry_text(entry) and _matches_role(entry, role):
             return entry
     return None
 
@@ -447,7 +485,7 @@ def _find_entry_by_company_prefix(entries, company, role=None):
         return None
 
     for entry in entries:
-        if first_word in _entry_text(entry):
+        if first_word in _entry_text(entry) and _matches_role(entry, role):
             return entry
     return None
 
@@ -526,9 +564,11 @@ def _set_status_rejected(driver, entry):
         time.sleep(0.5)
         driver.execute_script(EXECUTE_SCRIPT_CLICK, absage_label)
         print("   ✓ Set status to Absage")
+        return True
     except (NoSuchElementException, WebDriverException) as exc:
         print(f"   ❌ Could not find Absage radio button: {exc}")
         traceback.print_exc()
+        return False
 
 
 def _is_absagegrund_candidate(element):
@@ -584,9 +624,11 @@ def _fill_absagegrund(driver, wait, entry, absagegrund):
         element.clear()
         element.send_keys(absagegrund)
         print(f"   ✓ Filled Absagegrund → {absagegrund[:60]}...")
+        return True
     except (TimeoutException, NoSuchElementException, WebDriverException) as exc:
         print(f"   ❌ Could not fill Absagegrund field: {exc}")
         traceback.print_exc()
+        return False
 
 
 def handle_login(driver):

@@ -6,8 +6,8 @@ from pathlib import Path
 
 from selenium.common.exceptions import WebDriverException
 
-COOKIES_FILE = "cookies/jobroom_cookies.json"
-STORAGE_FILE = "cookies/jobroom_storage.json"
+COOKIES_FILE = "cookies/cookies.json"
+STORAGE_FILE = "cookies/storage.json"
 SESSION_INFO_FILE = "cookies/session_info.json"
 
 
@@ -35,9 +35,18 @@ def _delete_old_session():
                 print(f"   ⚠️ Could not delete {file_path}: {e}")
 
 
+def _ensure_directory_exists(file_path):
+    """Ensure parent directory exists for a file path."""
+    path = Path(file_path)
+    path.parent.mkdir(exist_ok=True, parents=True)
+
+
 def save_session(driver):
     """Save both cookies and localStorage/sessionStorage + mark as today's session"""
-    Path("cookies").mkdir(exist_ok=True)
+    # Create parent directories for all files
+    _ensure_directory_exists(COOKIES_FILE)
+    _ensure_directory_exists(STORAGE_FILE)
+    _ensure_directory_exists(SESSION_INFO_FILE)
 
     # Save cookies
     cookies = driver.get_cookies()
