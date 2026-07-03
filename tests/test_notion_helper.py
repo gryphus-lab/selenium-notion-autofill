@@ -342,3 +342,25 @@ def test_get_property_value_with_invalid_type(notion_helper):
     }
     result = notion_helper._get_property_value(prop)
     assert result == ""
+
+
+def test_get_property_value_title_concatenates_without_separator(notion_helper):
+    """Regression test: plain_text fragments must be concatenated directly
+    (no space inserted between them), since Notion rich text fragments already
+    contain their own whitespace where needed."""
+    prop = {
+        "type": "title",
+        "title": [{"plain_text": "Hello"}, {"plain_text": "World"}],
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == "HelloWorld"
+
+
+def test_get_property_value_rich_text_concatenates_without_separator(notion_helper):
+    """Regression test: rich_text fragments must be concatenated directly."""
+    prop = {
+        "type": "rich_text",
+        "rich_text": [{"plain_text": "foo"}, {"plain_text": "bar"}, {"plain_text": "baz"}],
+    }
+    result = notion_helper._get_property_value(prop)
+    assert result == "foobarbaz"

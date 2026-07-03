@@ -654,3 +654,262 @@ def test_set_status_rejected_uses_fallback_xpath(monkeypatch):
     result = selenium_helper._set_status_rejected(driver, Entry())
     assert result is False
 
+
+def test_set_status_rejected_returns_true_on_success(monkeypatch):
+    """Test _set_status_rejected returns True when the label is clicked."""
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    script_calls = []
+
+    class Driver:
+        def execute_script(self, script, elem):
+            script_calls.append(script)
+
+    class Entry:
+        def find_element(self, by, selector):
+            return SimpleNamespace()
+
+    driver = Driver()
+    result = selenium_helper._set_status_rejected(driver, Entry())
+    assert result is True
+    assert script_calls
+
+
+def test_matches_role_empty_role_always_matches():
+    """A falsy role should match any entry."""
+
+    class Entry:
+        text = "Some Company Developer"
+
+    assert selenium_helper._matches_role(Entry(), None) is True
+    assert selenium_helper._matches_role(Entry(), "") is True
+
+
+def test_matches_role_checks_first_word_of_role():
+    class Entry:
+        text = "Acme Corp Senior Developer"
+
+    assert selenium_helper._matches_role(Entry(), "Developer") is True
+    assert selenium_helper._matches_role(Entry(), "Manager") is False
+
+
+def test_find_entry_by_company_requires_matching_role():
+    """Regression test: entries matching the company name but not the role
+    should NOT be returned, to avoid mixing up multiple applications to the
+    same company for different positions."""
+
+    class Entry:
+        def __init__(self, text):
+            self.text = text
+
+    entries = [Entry("Acme Corp Manager")]
+
+    # Company matches but role does not -> no match
+    assert selenium_helper._find_entry_by_company(entries, "Acme", role="Developer") is None
+
+    # Company and role both match -> match
+    assert (
+        selenium_helper._find_entry_by_company(entries, "Acme", role="Manager")
+        is entries[0]
+    )
+
+
+def test_find_entry_by_company_prefix_requires_matching_role():
+    """Regression test: prefix matching must also respect the role filter."""
+
+    class Entry:
+        def __init__(self, text):
+            self.text = text
+
+    entries = [Entry("Acme Solutions Manager")]
+
+    assert (
+        selenium_helper._find_entry_by_company_prefix(
+            entries, "Acme GmbH", role="Developer"
+        )
+        is None
+    )
+    assert (
+        selenium_helper._find_entry_by_company_prefix(
+            entries, "Acme GmbH", role="Manager"
+        )
+        is entries[0]
+    )
+
+
+def test_get_month_year_pairs_with_none_dataframe():
+    """Test _get_month_year_pairs returns [] when df is None."""
+    assert selenium_helper._get_month_year_pairs(None) == []
+
+
+def test_get_month_year_pairs_with_empty_dataframe():
+    """Test _get_month_year_pairs returns [] when df.empty is True."""
+
+    class EmptyDf:
+        empty = True
+
+    assert selenium_helper._get_month_year_pairs(EmptyDf()) == []
+
+
+def test_get_month_year_pairs_skips_short_date_parts():
+    """Dates without at least a year-month part should be skipped."""
+
+    class DataFrameLike:
+        empty = False
+
+        def get(self, key, default=None):
+            return ["2026"]  # only a year, no month part
+
+    assert selenium_helper._get_month_year_pairs(DataFrameLike()) == []
+
+
+def test_expand_month_section_returns_early_for_empty_dataframe(monkeypatch):
+    """_expand_month_section should not query the driver when there are no
+    month/year pairs to expand."""
+
+    class Driver:
+        def find_elements(self, *args, **kwargs):
+            raise AssertionError("find_elements should not be called")
+
+    class EmptyDf:
+        empty = True
+
+    selenium_helper._expand_month_section(Driver(), EmptyDf())
+
+
+def test_update_rejected_entry_stops_when_status_fails(monkeypatch):
+    """If setting status to rejected fails, the flow should stop before
+    attempting to fill the Absagegrund field or updating Notion."""
+    calls = {"fill": False, "input": False, "notion": False}
+
+    monkeypatch.setattr(selenium_helper, "_set_status_rejected", lambda *a, **k: False)
+    monkeypatch.setattr(
+        selenium_helper,
+        "_fill_absagegrund",
+        lambda *a, **k: calls.__setitem__("fill", True),
+    )
+    monkeypatch.setattr(
+        "builtins.input", lambda *a, **k: calls.__setitem__("input", True)
+    )
+    monkeypatch.setattr(
+        selenium_helper,
+        "_update_notion_tracked",
+        lambda *a, **k: calls.__setitem__("notion", True),
+    )
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    class Driver:
+        def execute_script(self, *args, **kwargs):
+            pass
+
+    selenium_helper._update_rejected_entry(
+        Driver(), None, None, {"id": "p1"}, "Acme", "01.07: Reason", entry=object()
+    )
+
+    assert calls == {"fill": False, "input": False, "notion": False}
+
+
+def test_update_rejected_entry_stops_when_absagegrund_fails(monkeypatch):
+    """If filling the Absagegrund field fails, Notion should not be updated."""
+    calls = {"input": False, "notion": False}
+
+    monkeypatch.setattr(selenium_helper, "_set_status_rejected", lambda *a, **k: True)
+    monkeypatch.setattr(selenium_helper, "_fill_absagegrund", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "builtins.input", lambda *a, **k: calls.__setitem__("input", True)
+    )
+    monkeypatch.setattr(
+        selenium_helper,
+        "_update_notion_tracked",
+        lambda *a, **k: calls.__setitem__("notion", True),
+    )
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    class Driver:
+        def execute_script(self, *args, **kwargs):
+            pass
+
+    selenium_helper._update_rejected_entry(
+        Driver(), None, None, {"id": "p1"}, "Acme", "01.07: Reason", entry=object()
+    )
+
+    assert calls == {"input": False, "notion": False}
+
+
+def test_update_rejected_entry_completes_when_both_steps_succeed(monkeypatch):
+    """When both status update and Absagegrund fill succeed, Notion should
+    be updated and the user prompted to confirm."""
+    calls = {"input": False, "notion_page_id": None}
+
+    monkeypatch.setattr(selenium_helper, "_set_status_rejected", lambda *a, **k: True)
+    monkeypatch.setattr(selenium_helper, "_fill_absagegrund", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "builtins.input", lambda *a, **k: calls.__setitem__("input", True)
+    )
+    monkeypatch.setattr(
+        selenium_helper,
+        "_update_notion_tracked",
+        lambda notion, page_id: calls.__setitem__("notion_page_id", page_id),
+    )
+    monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
+
+    class Driver:
+        def execute_script(self, *args, **kwargs):
+            pass
+
+    selenium_helper._update_rejected_entry(
+        Driver(), None, None, {"id": "p1"}, "Acme", "01.07: Reason", entry=object()
+    )
+
+    assert calls["input"] is True
+    assert calls["notion_page_id"] == "p1"
+
+
+def test_resolve_element_type_field_uses_xpath_for_slash_selector(monkeypatch):
+    """Test _resolve_element uses XPath locator when resolve_type_selector
+    returns an XPath-style selector (starting with '//')."""
+    waited = []
+
+    class Wait:
+        def until(self, arg):
+            waited.append(arg)
+            return SimpleNamespace()
+
+    monkeypatch.setattr(
+        selenium_helper,
+        "resolve_type_selector",
+        lambda value: "//label[normalize-space()='Vorstellungsgespräch']",
+    )
+
+    selenium_helper._resolve_element(
+        Wait(), "Type", "dummy", "vorstellungsgespräch", row={}
+    )
+
+    assert waited
+    locator = waited[0]
+    # expected_conditions wraps the locator tuple internally; verify the By
+    # strategy used matches XPath by inspecting the underlying locator.
+    assert locator.locator[0] == selenium_helper.By.XPATH
+
+
+def test_resolve_element_type_field_uses_css_for_plain_selector(monkeypatch):
+    """Test _resolve_element uses CSS selector locator for non-XPath selectors."""
+    waited = []
+
+    class Wait:
+        def until(self, arg):
+            waited.append(arg)
+            return SimpleNamespace()
+
+    monkeypatch.setattr(
+        selenium_helper,
+        "resolve_type_selector",
+        lambda value: "label[for*='alv-checkbox-portal'][for*='electronic']",
+    )
+
+    selenium_helper._resolve_element(Wait(), "Type", "dummy", "electronic", row={})
+
+    assert waited
+    locator = waited[0]
+    assert locator.locator[0] == selenium_helper.By.CSS_SELECTOR
+

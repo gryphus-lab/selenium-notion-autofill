@@ -238,8 +238,6 @@ def test_restore_storage_with_empty_storage(tmp_path, monkeypatch):
 
 def test_restore_storage_handles_missing_keys(tmp_path, monkeypatch):
     """Test _restore_storage handles missing storage keys gracefully."""
-def test_restore_storage_handles_missing_keys(tmp_path, monkeypatch):
-    """Test _restore_storage handles missing storage keys gracefully."""
     storage_file = tmp_path / "storage.json"
     # Only localStorage, no sessionStorage
     storage_file.write_text(json.dumps({"localStorage": {"key": "value"}}))
@@ -302,3 +300,50 @@ def test_save_session_with_multiple_storages(tmp_path, monkeypatch):
         data = json.load(f)
     assert "localStorage" in data
     assert "sessionStorage" in data
+
+
+def test_default_file_paths_use_generic_names():
+    """Regression test: session files should use generic (non-branded) names."""
+    assert session_helper.COOKIES_FILE == "cookies/cookies.json"
+    assert session_helper.STORAGE_FILE == "cookies/storage.json"
+    assert session_helper.SESSION_INFO_FILE == "cookies/session_info.json"
+
+
+def test_ensure_directory_exists_creates_nested_directories(tmp_path):
+    """Test _ensure_directory_exists creates missing parent directories."""
+    nested_file = tmp_path / "a" / "b" / "c" / "file.json"
+    assert not nested_file.parent.exists()
+
+    session_helper._ensure_directory_exists(str(nested_file))
+
+    assert nested_file.parent.exists()
+    assert nested_file.parent.is_dir()
+
+
+def test_ensure_directory_exists_is_idempotent(tmp_path):
+    """Test _ensure_directory_exists does not fail if directory already exists."""
+    existing_file = tmp_path / "existing" / "file.json"
+    existing_file.parent.mkdir(parents=True)
+
+    # Should not raise even though the directory already exists
+    session_helper._ensure_directory_exists(str(existing_file))
+
+    assert existing_file.parent.exists()
+
+
+def test_save_session_creates_separate_directories_for_each_file(tmp_path, monkeypatch):
+    """Test save_session creates independent directories for cookies, storage, and info files."""
+    cookies_file = tmp_path / "cookies_dir" / "cookies.json"
+    storage_file = tmp_path / "storage_dir" / "storage.json"
+    info_file = tmp_path / "info_dir" / "session_info.json"
+
+    monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(storage_file))
+    monkeypatch.setattr(session_helper, "SESSION_INFO_FILE", str(info_file))
+
+    driver = DummyDriver()
+    session_helper.save_session(driver)
+
+    assert cookies_file.exists()
+    assert storage_file.exists()
+    assert info_file.exists()

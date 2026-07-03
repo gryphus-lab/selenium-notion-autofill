@@ -388,3 +388,74 @@ def test_first_monday_various_days():
     result = main_mod._first_monday_on_or_after(sunday)
     assert result.weekday() == 0
     assert result == datetime(2024, 1, 8, tzinfo=timezone.utc)
+
+
+def test_extract_formatted_field_with_non_dict_parsed_value():
+    """When ast.literal_eval succeeds but doesn't produce a dict, the
+    original value should be returned unchanged (not None)."""
+    assert main_mod.extract_formatted_field("123") == "123"
+    assert main_mod.extract_formatted_field("[1, 2, 3]") == "[1, 2, 3]"
+    assert main_mod.extract_formatted_field(123) == 123
+
+
+def test_extract_formatted_field_dict_without_string_key():
+    """Test extract_formatted_field with dict missing the 'string' key."""
+    result = main_mod.extract_formatted_field("{'other': 'value'}")
+    assert result is None
+
+
+def test_get_month_filter_uses_applied_date_for_both_conditions():
+    """Regression test: both date conditions in get_month_filter must use
+    the APPLIED_DATE constant (previously the 'before' clause used a
+    hardcoded 'Applied date' string, which happened to match but was
+    inconsistent with the constant)."""
+    month_filter = main_mod.get_month_filter()
+    assert month_filter["and"][0]["property"] == main_mod.APPLIED_DATE
+    assert month_filter["and"][1]["property"] == main_mod.APPLIED_DATE
+    assert "before" in month_filter["and"][1]["date"]
+
+
+def test_run_update_rejections_handles_screenshot_failure(monkeypatch):
+    """Test _run_update_rejections gracefully handles a failing screenshot
+    save when an exception occurs during update_rejected_records."""
+    df = pd.DataFrame(
+        [
+            {
+                "id": "page-1",
+                "Company": "Acme",
+                "Role": "Dev",
+                "Last Update Date": "2024-01-01",
+                "Update Details": "reason",
+            }
+        ]
+    )
+    notion = FakeNotion(df)
+
+    class ScreenshotFailingDriver(FakeDriver):
+        def save_screenshot(self, path):
+            raise OSError("disk full")
+
+    driver = ScreenshotFailingDriver()
+    wait = FakeWait(driver, 1)
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(args))
+    monkeypatch.setattr(main_mod, "get_rejected_filter", lambda: {"filter": "rejected"})
+    monkeypatch.setattr(main_mod, "_create_driver", lambda: (driver, wait))
+    monkeypatch.setattr(main_mod, "handle_login", lambda driver: None)
+
+    def raise_exc(driver, wait, df, notion):
+        raise RuntimeError("Test error")
+
+    monkeypatch.setattr(main_mod, "update_rejected_records", raise_exc)
+    monkeypatch.setattr(builtins, "input", lambda *args, **kwargs: "")
+
+    main_mod._run_update_rejections(notion)
+
+    assert driver.quit_called
+    assert any(
+        "Could not save screenshot" in item
+        for args in printed
+        for item in args
+        if isinstance(item, str)
+    )
