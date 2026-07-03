@@ -47,10 +47,11 @@ def extract_formatted_field(val):
         return val
     try:
         parsed = ast.literal_eval(str(val))
+    except (ValueError, SyntaxError, TypeError):
+        return val
+    else:
         if isinstance(parsed, dict):
             return parsed.get("string")
-        return val
-    except (ValueError, SyntaxError, TypeError):
         return val
 
 
