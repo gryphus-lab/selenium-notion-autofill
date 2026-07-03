@@ -865,51 +865,80 @@ def test_update_rejected_entry_completes_when_both_steps_succeed(monkeypatch):
     assert calls["notion_page_id"] == "p1"
 
 
-def test_resolve_element_type_field_uses_xpath_for_slash_selector(monkeypatch):
+
+
+def test_resolve_element_type_field_uses_xpath_for_slash_selector_v2(monkeypatch):
     """Test _resolve_element uses XPath locator when resolve_type_selector
     returns an XPath-style selector (starting with '//')."""
-    waited = []
-
+    
+    # Track what expected_conditions was called with
+    ec_calls = []
+    
+    # Mock ec.presence_of_element_located to capture the locator tuple
+    class FakeEC:
+        @staticmethod
+        def presence_of_element_located(locator):
+            ec_calls.append(locator)
+            return lambda driver: SimpleNamespace()
+    
     class Wait:
         def until(self, arg):
-            waited.append(arg)
             return SimpleNamespace()
-
+    
     monkeypatch.setattr(
         selenium_helper,
         "resolve_type_selector",
         lambda value: "//label[normalize-space()='Vorstellungsgespräch']",
     )
+    
+    # Replace ec in the module
+    original_ec = selenium_helper.ec
+    selenium_helper.ec = FakeEC()
+    
+    try:
+        selenium_helper._resolve_element(
+            Wait(), "Type", "dummy", "vorstellungsgespräch", row={}
+        )
+        
+        assert ec_calls
+        locator = ec_calls[0]
+        assert locator[0] == selenium_helper.By.XPATH
+    finally:
+        selenium_helper.ec = original_ec
 
-    selenium_helper._resolve_element(
-        Wait(), "Type", "dummy", "vorstellungsgespräch", row={}
-    )
 
-    assert waited
-    locator = waited[0]
-    # expected_conditions wraps the locator tuple internally; verify the By
-    # strategy used matches XPath by inspecting the underlying locator.
-    assert locator.locator[0] == selenium_helper.By.XPATH
-
-
-def test_resolve_element_type_field_uses_css_for_plain_selector(monkeypatch):
+def test_resolve_element_type_field_uses_css_for_plain_selector_v2(monkeypatch):
     """Test _resolve_element uses CSS selector locator for non-XPath selectors."""
-    waited = []
-
+    
+    # Track what expected_conditions was called with
+    ec_calls = []
+    
+    # Mock ec.presence_of_element_located to capture the locator tuple
+    class FakeEC:
+        @staticmethod
+        def presence_of_element_located(locator):
+            ec_calls.append(locator)
+            return lambda driver: SimpleNamespace()
+    
     class Wait:
         def until(self, arg):
-            waited.append(arg)
             return SimpleNamespace()
-
+    
     monkeypatch.setattr(
         selenium_helper,
         "resolve_type_selector",
         lambda value: "label[for*='alv-checkbox-portal'][for*='electronic']",
     )
-
-    selenium_helper._resolve_element(Wait(), "Type", "dummy", "electronic", row={})
-
-    assert waited
-    locator = waited[0]
-    assert locator.locator[0] == selenium_helper.By.CSS_SELECTOR
-
+    
+    # Replace ec in the module
+    original_ec = selenium_helper.ec
+    selenium_helper.ec = FakeEC()
+    
+    try:
+        selenium_helper._resolve_element(Wait(), "Type", "dummy", "electronic", row={})
+        
+        assert ec_calls
+        locator = ec_calls[0]
+        assert locator[0] == selenium_helper.By.CSS_SELECTOR
+    finally:
+        selenium_helper.ec = original_ec
