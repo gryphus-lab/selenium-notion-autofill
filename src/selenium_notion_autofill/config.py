@@ -1,5 +1,6 @@
 """Configuration for Notion-Selenium Autofill."""
 
+import json
 import os
 
 from dotenv import load_dotenv
@@ -8,11 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # From Notion Integrations — set these in your .env file, never commit them.
-NOTION_API_KEY = os.environ["NOTION_API_KEY"]
-DATABASE_ID = os.environ["DATABASE_ID"]
+NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "test-notion-api-key")
+DATABASE_ID = os.environ.get("DATABASE_ID", "test-database-id")
 
 # Website selectors
-WEBSITE_URL = os.environ["WEBSITE_URL"]
+WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://example.com")
 
 APPLIED_DATE = "Applied date"
 EXIT_MESSAGE = "     Exiting...\n"
@@ -48,3 +49,15 @@ REJECTION_SELECTORS = {
 }
 
 ENTRY_SELECTOR = "alv-work-effort"
+
+# Optional: supply a JSON mapping (string) via env var NOTION_PROPERTY_MAP_JSON
+# mapping canonical keys (Company, Role, URL, Applied date, Description, Tracked)
+# to your database property names. Example:
+# NOTION_PROPERTY_MAP_JSON='{"Company": "Firma", "Role": "Stelle"}'
+NOTION_PROPERTY_MAP_JSON = os.environ.get("NOTION_PROPERTY_MAP_JSON", "")
+NOTION_PROPERTY_MAP = None
+if NOTION_PROPERTY_MAP_JSON:
+    try:
+        NOTION_PROPERTY_MAP = json.loads(NOTION_PROPERTY_MAP_JSON)
+    except Exception:
+        NOTION_PROPERTY_MAP = None
