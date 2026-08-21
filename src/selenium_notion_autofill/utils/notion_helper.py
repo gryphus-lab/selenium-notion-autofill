@@ -1,6 +1,6 @@
 """Helper class for interacting with Notion API."""
 
-from typing import Any, Dict, List, Optional, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 import httpx
 import pandas as pd
@@ -23,9 +23,7 @@ def build_notion_properties(
     return notion_props
 
 
-def _actual_property_name(
-    key: str, prop_name_map: Optional[Mapping[str, str]]
-) -> str:
+def _actual_property_name(key: str, prop_name_map: Optional[Mapping[str, str]]) -> str:
     if isinstance(prop_name_map, Mapping):
         return prop_name_map.get(key, key)
     return key

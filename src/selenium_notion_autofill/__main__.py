@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Notion → Selenium Autofill Script - Main entry point."""
 
-import ast
 import argparse
+import ast
 import json
+import re
 import shutil
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from urllib.parse import urlparse
 
-import pandas as pd
 import httpx
-from bs4 import BeautifulSoup, Tag
+import pandas as pd
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -35,7 +35,6 @@ except ImportError:  # pragma: no cover - optional dependency
     import shutil
 
 from selenium_notion_autofill.utils import NotionHelper
-from selenium_notion_autofill.utils.notion_helper import build_notion_properties
 from selenium_notion_autofill.utils.selenium_helper import (
     handle_login,
     process_records,
@@ -240,7 +239,9 @@ def main():
         _run_create_from_args(notion, sys.argv[2:])
     else:
         print(f"Unknown mode: {mode}")
-        print("Usage: uv run -m selenium_notion_autofill [new|update-rejections|create]")
+        print(
+            "Usage: uv run -m selenium_notion_autofill [new|update-rejections|create]"
+        )
         sys.exit(1)
 
 
@@ -277,13 +278,62 @@ def _run_new_entries(notion):
         driver.quit()
 
 
-def _scrape_url(url: str) -> dict:
-    """Scrape a URL to extract title, description and first h1.
+def _meta_content(soup, attrs: dict[str, str]) -> str | None:
+    meta = soup.find("meta", attrs=attrs)
+    value = meta.get("content") if meta else None
+    return value.strip() if isinstance(value, str) else None
 
-    Prefer using BeautifulSoup for robust parsing; fall back to regex if the
-    parser is not available or parsing fails. Returns a dict with keys:
-    title, description, h1, and url.
-    """
+
+def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, str]:
+    soup = BeautifulSoup(text, "html.parser")
+    if soup.title and isinstance(soup.title.string, str):
+        result["title"] = soup.title.string.strip()
+
+    description = _meta_content(soup, {"name": "description"}) or _meta_content(
+        soup, {"property": "og:description"}
+    )
+    if description:
+        result["description"] = description
+
+    h1 = soup.find("h1")
+    if h1:
+        result["h1"] = h1.get_text(strip=True)
+    return result
+
+
+def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
+    m = re.search(r"<title>([^<]*+)</title>", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        result["title"] = m.group(1).strip()
+
+    for attribute, attribute_value in (
+        ("name", "description"),
+        ("property", "og:description"),
+    ):
+        tags = re.findall(r"<meta\b[^>]*>", text, re.IGNORECASE)
+        attribute_pattern = (
+            rf"\b{attribute}\s*=\s*[\"']{re.escape(attribute_value)}[\"']"
+        )
+        for tag in tags:
+            if re.search(attribute_pattern, tag, re.IGNORECASE):
+                content = re.search(
+                    r"\bcontent\s*=\s*[\"']([^\"']*)[\"']", tag, re.IGNORECASE
+                )
+                if content:
+                    result["description"] = content.group(1).strip()
+                    break
+        if "description" in result:
+            break
+
+    m = re.search(r"<h1[^>]*>(.*?)</h1>", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        result["h1"] = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+
+    return result
+
+
+def _scrape_url(url: str) -> dict:
+    """Scrape a URL to extract title, description and first h1."""
     try:
         resp = httpx.get(url, timeout=15)
         text = resp.text or ""
@@ -292,60 +342,61 @@ def _scrape_url(url: str) -> dict:
         return {"url": url}
 
     result = {"url": url}
-
-    # Try BeautifulSoup parsing first
     try:
-        soup = BeautifulSoup(text, "html.parser")
-        if soup.title and soup.title.string:
-            result["title"] = soup.title.string.strip()
-
-        # meta description
-        desc = None
-        md = soup.find("meta", attrs={"name": "description"})
-        if md and md.get("content"):
-            desc = md.get("content").strip()
-        else:
-            og = soup.find("meta", attrs={"property": "og:description"})
-            if og and og.get("content"):
-                desc = og.get("content").strip()
-        if desc:
-            result["description"] = desc
-
-        h1 = soup.find("h1")
-        if h1:
-            result["h1"] = h1.get_text(strip=True)
-
-        return result
+        return _scrape_with_beautifulsoup(text, result)
     except Exception:
-        # Fallback to regex if BeautifulSoup parsing fails
-        pass
+        return _scrape_with_regex(text, result)
 
-    # Regex fallback
-    m = re.search(r"<title>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
-    if m:
-        result["title"] = m.group(1).strip()
 
-    m = re.search(
-        r"<meta[^>]+name=[\"']description[\"'][^>]*content=[\"'](.*?)[\"']",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if m:
-        result["description"] = m.group(1).strip()
-    else:
-        m = re.search(
-            r"<meta[^>]+property=[\"']og:description[\"'][^>]*content=[\"'](.*?)[\"']",
-            text,
-            re.IGNORECASE | re.DOTALL,
-        )
-        if m:
-            result["description"] = m.group(1).strip()
+def _build_create_properties(
+    url: str,
+    scraped: dict,
+    hostname: str,
+    title: str,
+) -> dict[str, object]:
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    values = {
+        "Company": hostname,
+        "Role": title,
+        "URL": url,
+        "Date": today_iso,
+        "Type": "electronic",
+        APPLIED_DATE: today_iso,
+        "Tracked": False,
+    }
+    properties: dict[str, object] = {
+        field_name: values[field_name]
+        for field_name in FIELD_SELECTORS
+        if field_name in values
+    }
+    properties["Description"] = scraped.get("description") or ""
+    return properties
 
-    m = re.search(r"<h1[^>]*>(.*?)</h1>", text, re.IGNORECASE | re.DOTALL)
-    if m:
-        result["h1"] = re.sub(r"<[^>]+>", "", m.group(1)).strip()
 
-    return result
+def _build_dry_run_payload(
+    properties: dict[str, object], final_map: dict[str, str] | None
+) -> dict:
+    payload = {}
+    for key, value in properties.items():
+        if value is None:
+            continue
+        actual_name = final_map.get(key, key) if final_map else key
+        canonical = key.lower()
+        if canonical == "company":
+            payload[actual_name] = {"title": [{"text": {"content": str(value)}}]}
+        elif canonical in ("url", "website", "link"):
+            payload[actual_name] = {"url": str(value)}
+        elif canonical == "email":
+            payload[actual_name] = {"email": str(value)}
+        elif canonical in ("phone", "phone_number"):
+            payload[actual_name] = {"phone_number": str(value)}
+        elif isinstance(value, bool):
+            payload[actual_name] = {"checkbox": value}
+        elif isinstance(value, (int, float)):
+            payload[actual_name] = {"number": value}
+        else:
+            payload[actual_name] = {"rich_text": [{"text": {"content": str(value)}}]}
+    return payload
 
 
 def _run_create(
@@ -367,66 +418,20 @@ def _run_create(
     parsed = urlparse(url)
     hostname = parsed.hostname or parsed.netloc or url
 
-    title = scraped.get("title") or scraped.get("h1") or hostname
-    if role_override:
-        title = role_override
-    if company_override:
-        hostname = company_override
-
-    today_iso = datetime.now(timezone.utc).date().isoformat()
-
-    # Build properties using the same names the Selenium form expects from Notion.
-    properties: dict[str, object] = {}
-    for field_name in FIELD_SELECTORS:
-        if field_name == "Company":
-            properties[field_name] = hostname
-        elif field_name == "Role":
-            properties[field_name] = title
-        elif field_name == "URL":
-            properties[field_name] = url
-        elif field_name == "Date":
-            properties[field_name] = today_iso
-        elif field_name == "Type":
-            properties[field_name] = "electronic"
-        elif field_name == APPLIED_DATE:
-            properties[field_name] = today_iso
-        elif field_name == "Tracked":
-            properties[field_name] = False
-
-    # Add a couple useful extras only if the DB actually contains them.
-    if "Description" in FIELD_SELECTORS or "Description" in (prop_name_map or {}):
-        properties["Description"] = scraped.get("description") or ""
+    title = role_override or scraped.get("title") or scraped.get("h1") or hostname
+    hostname = company_override or hostname
+    properties = _build_create_properties(url, scraped, hostname, title)
+    if "Description" not in FIELD_SELECTORS and "Description" not in (
+        prop_name_map or {}
+    ):
+        properties.pop("Description")
 
     # Merge user-provided mapping if present; if not, use env config mapping if any.
     final_map = prop_name_map if prop_name_map else NOTION_PROPERTY_MAP
     final_map = final_map if (final_map and isinstance(final_map, dict)) else None
 
     if dry_run:
-        notion_payload = {}
-        for key, val in properties.items():
-            if val is None:
-                continue
-            actual_name = final_map.get(key, key) if final_map else key
-            canonical = key.lower()
-            if canonical == "company":
-                notion_payload[actual_name] = {
-                    "title": [{"text": {"content": str(val)}}]
-                }
-            elif canonical in ("url", "website", "link"):
-                notion_payload[actual_name] = {"url": str(val)}
-            elif canonical in ("email",):
-                notion_payload[actual_name] = {"email": str(val)}
-            elif canonical in ("phone", "phone_number"):
-                notion_payload[actual_name] = {"phone_number": str(val)}
-            elif isinstance(val, bool):
-                notion_payload[actual_name] = {"checkbox": bool(val)}
-            elif isinstance(val, (int, float)):
-                notion_payload[actual_name] = {"number": val}
-            else:
-                notion_payload[actual_name] = {
-                    "rich_text": [{"text": {"content": str(val)}}]
-                }
-
+        notion_payload = _build_dry_run_payload(properties, final_map)
         print("--- Dry run: Notion payload to create ---")
         print(notion_payload)
         print("--- End payload ---")
@@ -443,28 +448,15 @@ def _run_create(
         print(f"❌ Failed to create Notion entry for {url}")
 
 
-def _run_update_rejections(notion):
-    """Update existing entries that have been rejected since submission."""
-    rejected_filter = get_rejected_filter()
-    df = notion.get_database_data(DATABASE_ID, filter=rejected_filter)
-
-    if df.empty:
-        print("\n     ⚠️ No rejected records to update for this month.")
-        print("     All entries are either still open or already updated.")
-        print(EXIT_MESSAGE)
-        return
-
-    # Filter to only those with Update Details (rejection reason)
-    df = df[
-        df["Update Details"].apply(lambda x: pd.notna(x) and str(x).strip() != "")
+def _filter_rejected_records(df: pd.DataFrame) -> pd.DataFrame:
+    return df[
+        df["Update Details"].apply(
+            lambda value: pd.notna(value) and str(value).strip() != ""
+        )
     ].reset_index(drop=True)
 
-    if df.empty:
-        print("\n     ⚠️ Rejected records found but none have Update Details.")
-        print("     Please add rejection reasons in Notion first.")
-        print(EXIT_MESSAGE)
-        return
 
+def _print_rejected_records(df: pd.DataFrame) -> None:
     print(f"✅ Found {len(df)} rejected records to update on Job-Room")
     print("\nRecords to update:")
     for _, row in df.iterrows():
@@ -473,8 +465,8 @@ def _run_update_rejections(notion):
         update_date = row.get("Last Update Date", "N/A")
         print(f"   • {company} - {role} (rejected: {update_date})")
 
-    driver, wait = _create_driver()
 
+def _process_rejected_records(driver, wait, df, notion) -> None:
     try:
         print("\n🌐 Opening Job-Room...")
         handle_login(driver)
@@ -490,6 +482,31 @@ def _run_update_rejections(notion):
     finally:
         input("\nPress Enter to close browser...")
         driver.quit()
+
+
+def _run_update_rejections(notion):
+    """Update existing entries that have been rejected since submission."""
+    rejected_filter = get_rejected_filter()
+    df = notion.get_database_data(DATABASE_ID, filter=rejected_filter)
+
+    if df.empty:
+        print("\n     ⚠️ No rejected records to update for this month.")
+        print("     All entries are either still open or already updated.")
+        print(EXIT_MESSAGE)
+        return
+
+    df = _filter_rejected_records(df)
+
+    if df.empty:
+        print("\n     ⚠️ Rejected records found but none have Update Details.")
+        print("     Please add rejection reasons in Notion first.")
+        print(EXIT_MESSAGE)
+        return
+
+    _print_rejected_records(df)
+
+    driver, wait = _create_driver()
+    _process_rejected_records(driver, wait, df, notion)
 
 
 if __name__ == "__main__":
