@@ -35,6 +35,34 @@ def test_build_notion_properties_maps_dates_and_type():
     }
 
 
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("Company", "Acme", {"title": [{"text": {"content": "Acme"}}]}),
+        ("URL", "https://example.com", {"url": "https://example.com"}),
+        ("Email", "a@example.com", {"email": "a@example.com"}),
+        ("Phone", "+41123456789", {"phone_number": "+41123456789"}),
+        ("Tracked", True, {"checkbox": True}),
+        ("Count", 3, {"number": 3}),
+        ("Role", "Engineer", {"rich_text": [{"text": {"content": "Engineer"}}]}),
+    ],
+)
+def test_build_notion_properties_maps_scalar_types(key, value, expected):
+    assert build_notion_properties({key: value}) == {key: expected}
+
+
+def test_build_notion_properties_applies_mapping_and_skips_none():
+    assert build_notion_properties(
+        {"Company": "Acme", "Description": None}, {"Company": "Firma"}
+    ) == {"Firma": {"title": [{"text": {"content": "Acme"}}]}}
+
+
+def test_build_notion_properties_ignores_non_mapping_name_map():
+    assert build_notion_properties({"Role": "Engineer"}, ["invalid"]) == {
+        "Role": {"rich_text": [{"text": {"content": "Engineer"}}]}
+    }
+
+
 def test_get_property_value_title(notion_helper):
     """Test extracting title property value."""
     prop = {
@@ -347,6 +375,50 @@ def test_update_row_with_successful_response(monkeypatch, notion_helper):
 
     result = notion_helper.update_row("page-1", {"Status": {"select": {"name": "Done"}}})
     assert result is True
+
+
+@pytest.mark.parametrize(
+    ("status_code", "payload", "expected"),
+    [(201, {"id": "page-123456789"}, "page-123456789"), (200, {}, None), (400, {}, None)],
+)
+def test_create_page_handles_response_statuses(
+    monkeypatch, notion_helper, status_code, payload, expected
+):
+    class FakeResponse:
+        text = "response body"
+
+        def __init__(self):
+            self.status_code = status_code
+
+        def json(self):
+            return payload
+
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=20):
+        calls.append((url, json, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("selenium_notion_autofill.utils.notion_helper.httpx.post", fake_post)
+
+    result = notion_helper.create_page(
+        "db-id", {"Company": "Acme", "Type": "electronic"}, {"Company": "Firma"}
+    )
+
+    assert result == expected
+    assert calls[0][0].endswith("/pages")
+    assert calls[0][1]["parent"] == {"database_id": "db-id"}
+    assert calls[0][1]["properties"]["Firma"]["title"]
+    assert calls[0][1]["properties"]["Type"] == {"select": {"name": "electronic"}}
+
+
+def test_create_page_returns_none_on_request_error(monkeypatch, notion_helper):
+    def fake_post(*args, **kwargs):
+        raise httpx.RequestError("boom")
+
+    monkeypatch.setattr("selenium_notion_autofill.utils.notion_helper.httpx.post", fake_post)
+
+    assert notion_helper.create_page("db-id", {"Company": "Acme"}) is None
 
 
 def test_get_property_value_with_invalid_type(notion_helper):
