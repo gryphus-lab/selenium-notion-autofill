@@ -9,6 +9,7 @@ import shutil
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -203,7 +204,12 @@ def _load_prop_name_map(prop_map: str | None) -> dict[str, str] | None:
         return None
 
     try:
-        with open(prop_map, "r", encoding="utf-8") as fh:
+        base_dir = Path.cwd().resolve()
+        prop_map_path = Path(prop_map).resolve()
+        if not prop_map_path.is_relative_to(base_dir):
+            raise ValueError("path must be inside the current working directory")
+
+        with prop_map_path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
     except Exception as exc:
         print(f"Could not load prop-map file {prop_map}: {exc}")

@@ -193,6 +193,25 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert notion.calls == []
 
 
+def test_load_prop_name_map_rejects_path_outside_working_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    outside_path = tmp_path.parent / "prop_map.json"
+    outside_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main_mod._load_prop_name_map(str(outside_path))
+
+
+def test_load_prop_name_map_accepts_file_in_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    prop_map_path = tmp_path / "prop_map.json"
+    prop_map_path.write_text('{"Company": "Firma"}', encoding="utf-8")
+
+    assert main_mod._load_prop_name_map("./prop_map.json") == {"Company": "Firma"}
+
+
 def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     monkeypatch.setattr(
         main_mod,
