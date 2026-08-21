@@ -49,7 +49,7 @@ run = "uv add {args}"
 
 [tasks.create]
 description = "Create a new Notion entry from a URL"
-run = "uv run -m selenium_notion_autofill create {args}"
+run = "uv run -m selenium_notion_autofill create"
 alias = ["c"]
 
 [tasks.update-deps]

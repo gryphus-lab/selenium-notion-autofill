@@ -7,6 +7,7 @@ import ipaddress
 import json
 import re
 import shutil
+import socket
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - optional dependency
     import shutil
 
 from selenium_notion_autofill.utils import NotionHelper
+from selenium_notion_autofill.utils.notion_helper import build_notion_properties
 from selenium_notion_autofill.utils.selenium_helper import (
     handle_login,
     process_records,
@@ -371,13 +373,35 @@ def _validate_external_url(url: str) -> None:
     if hostname == "localhost" or hostname.endswith(".localhost"):
         raise ValueError("URL must not target localhost")
 
+    _validate_public_hostname(
+        hostname,
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
+
+
+def _validate_public_hostname(hostname: str, port: int) -> None:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
+        _validate_resolved_addresses(hostname, port)
         return
 
     if not address.is_global:
         raise ValueError("URL must target a public IP address")
+
+
+def _validate_resolved_addresses(hostname: str, port: int) -> None:
+    try:
+        addresses = {
+            sockaddr[0]
+            for sockaddr in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError) as exc:
+        raise ValueError("URL hostname could not be resolved") from exc
+    if not addresses or any(
+        not ipaddress.ip_address(address).is_global for address in addresses
+    ):
+        raise ValueError("URL must resolve only to public IP addresses")
 
 
 def _build_create_properties(
@@ -408,27 +432,7 @@ def _build_create_properties(
 def _build_dry_run_payload(
     properties: dict[str, object], final_map: dict[str, str] | None
 ) -> dict:
-    payload = {}
-    for key, value in properties.items():
-        if value is None:
-            continue
-        actual_name = final_map.get(key, key) if final_map else key
-        canonical = key.lower()
-        if canonical == "company":
-            payload[actual_name] = {"title": [{"text": {"content": str(value)}}]}
-        elif canonical in ("url", "website", "link"):
-            payload[actual_name] = {"url": str(value)}
-        elif canonical == "email":
-            payload[actual_name] = {"email": str(value)}
-        elif canonical in ("phone", "phone_number"):
-            payload[actual_name] = {"phone_number": str(value)}
-        elif isinstance(value, bool):
-            payload[actual_name] = {"checkbox": value}
-        elif isinstance(value, (int, float)):
-            payload[actual_name] = {"number": value}
-        else:
-            payload[actual_name] = {"rich_text": [{"text": {"content": str(value)}}]}
-    return payload
+    return build_notion_properties(properties, final_map)
 
 
 def _run_create(

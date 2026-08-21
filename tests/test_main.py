@@ -124,10 +124,10 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
         main_mod.httpx, "get", lambda url, timeout, follow_redirects: Response()
     )
 
-    result = main_mod._scrape_url("https://example.com/jobs/1")
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/1")
 
     assert result == {
-        "url": "https://example.com/jobs/1",
+        "url": "https://93.184.216.34/jobs/1",
         "title": "Engineer",
         "description": "Build systems",
         "h1": "Senior Engineer",
@@ -151,7 +151,7 @@ def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("parser error")),
     )
 
-    result = main_mod._scrape_url("https://example.com/jobs/2")
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/2")
 
     assert result["title"] == "Engineer"
     assert result["description"] == "Ship products"
@@ -159,13 +159,13 @@ def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
 
 
 def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
-    def raise_error(url, timeout):
+    def raise_error(url, timeout, follow_redirects):
         raise RuntimeError("network unavailable")
 
     monkeypatch.setattr(main_mod.httpx, "get", raise_error)
 
-    assert main_mod._scrape_url("https://example.com/jobs/3") == {
-        "url": "https://example.com/jobs/3"
+    assert main_mod._scrape_url("https://93.184.216.34/jobs/3") == {
+        "url": "https://93.184.216.34/jobs/3"
     }
 
 
@@ -201,11 +201,11 @@ def test_scrape_url_disables_redirects(monkeypatch):
 
     monkeypatch.setattr(main_mod.httpx, "get", fake_get)
 
-    main_mod._scrape_url("https://example.com/jobs/4")
+    main_mod._scrape_url("https://93.184.216.34/jobs/4")
 
     assert calls == [
         (
-            "https://example.com/jobs/4",
+            "https://93.184.216.34/jobs/4",
             {"timeout": 15, "follow_redirects": False},
         )
     ]
@@ -225,7 +225,7 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
 
     main_mod._run_create(
         notion,
-        "https://jobs.example/1",
+        "https://93.184.216.34/jobs/1",
         dry_run=True,
         prop_name_map={"Company": "Firma", "Role": "Stelle"},
         company_override="Acme",
@@ -235,7 +235,7 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "'Firma': {'title': [{'text': {'content': 'Acme'}}]}" in output
     assert "'Stelle': {'rich_text': [{'text': {'content': 'Developer'}}]}" in output
-    assert "'URL': {'url': 'https://jobs.example/1'}" in output
+    assert "'URL': {'url': 'https://93.184.216.34/jobs/1'}" in output
     assert notion.calls == []
 
 
@@ -266,13 +266,13 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     )
     notion = FakeNotion()
 
-    main_mod._run_create(notion, "https://jobs.example/2")
+    main_mod._run_create(notion, "https://93.184.216.34/jobs/2")
 
     database_id, properties, prop_name_map = notion.calls[0]
     assert database_id == main_mod.DATABASE_ID
-    assert properties["Company"] == "jobs.example"
+    assert properties["Company"] == "93.184.216.34"
     assert properties["Role"] == "Data Engineer"
-    assert properties["URL"] == "https://jobs.example/2"
+    assert properties["URL"] == "https://93.184.216.34/jobs/2"
     assert properties["Type"] == "electronic"
     assert "Tracked" not in properties
     assert prop_name_map is None

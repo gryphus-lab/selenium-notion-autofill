@@ -9,11 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # From Notion Integrations — set these in your .env file, never commit them.
-NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "test-notion-api-key")
-DATABASE_ID = os.environ.get("DATABASE_ID", "test-database-id")
+NOTION_API_KEY = os.environ["NOTION_API_KEY"]
+DATABASE_ID = os.environ["DATABASE_ID"]
 
 # Website selectors
-WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://example.com")
+WEBSITE_URL = os.environ["WEBSITE_URL"]
 
 APPLIED_DATE = "Applied date"
 EXIT_MESSAGE = "     Exiting...\n"

@@ -3,7 +3,10 @@
 import pytest
 import httpx
 from unittest.mock import Mock
-from selenium_notion_autofill.utils.notion_helper import NotionHelper
+from selenium_notion_autofill.utils.notion_helper import (
+    NotionHelper,
+    build_notion_properties,
+)
 
 
 @pytest.fixture
@@ -18,6 +21,18 @@ def test_notion_helper_initialization(notion_helper):
     assert notion_helper.base_url == "https://api.notion.com/v1"
     assert "Authorization" in notion_helper.headers
     assert notion_helper.headers["Authorization"] == "Bearer test_api_key"
+
+
+def test_build_notion_properties_maps_dates_and_type():
+    properties = build_notion_properties(
+        {"Date": "2024-01-15", "Applied date": "2024-01-16", "Type": "electronic"}
+    )
+
+    assert properties == {
+        "Date": {"date": {"start": "2024-01-15"}},
+        "Applied date": {"date": {"start": "2024-01-16"}},
+        "Type": {"select": {"name": "electronic"}},
+    }
 
 
 def test_get_property_value_title(notion_helper):
