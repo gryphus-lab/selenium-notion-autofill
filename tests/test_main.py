@@ -120,7 +120,9 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
             "<h1>Senior Engineer</h1></html>"
         )
 
-    monkeypatch.setattr(main_mod.httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        main_mod.httpx, "get", lambda url, timeout, follow_redirects: Response()
+    )
 
     result = main_mod._scrape_url("https://example.com/jobs/1")
 
@@ -140,7 +142,9 @@ def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
             "<h1>Platform Engineer</h1></html>"
         )
 
-    monkeypatch.setattr(main_mod.httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        main_mod.httpx, "get", lambda url, timeout, follow_redirects: Response()
+    )
     monkeypatch.setattr(
         main_mod,
         "BeautifulSoup",
@@ -163,6 +167,48 @@ def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
     assert main_mod._scrape_url("https://example.com/jobs/3") == {
         "url": "https://example.com/jobs/3"
     }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8080/",
+        "http://[::1]/",
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",
+        "https://user:password@example.com/",
+    ],
+)
+def test_scrape_url_rejects_ssrf_targets(url, monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("network request should not be made")
+
+    monkeypatch.setattr(main_mod.httpx, "get", fail_if_called)
+
+    with pytest.raises(ValueError):
+        main_mod._scrape_url(url)
+
+
+def test_scrape_url_disables_redirects(monkeypatch):
+    calls = []
+
+    class Response:
+        text = ""
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(main_mod.httpx, "get", fake_get)
+
+    main_mod._scrape_url("https://example.com/jobs/4")
+
+    assert calls == [
+        (
+            "https://example.com/jobs/4",
+            {"timeout": 15, "follow_redirects": False},
+        )
+    ]
 
 
 def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):

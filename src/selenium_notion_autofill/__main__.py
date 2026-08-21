@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import ipaddress
 import json
 import re
 import shutil
@@ -340,8 +341,9 @@ def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
 
 def _scrape_url(url: str) -> dict:
     """Scrape a URL to extract title, description and first h1."""
+    _validate_external_url(url)
     try:
-        resp = httpx.get(url, timeout=15)
+        resp = httpx.get(url, timeout=15, follow_redirects=False)
         text = resp.text or ""
     except Exception as exc:
         print(f"   ❌ Could not fetch URL {url}: {exc}")
@@ -352,6 +354,30 @@ def _scrape_url(url: str) -> dict:
         return _scrape_with_beautifulsoup(text, result)
     except Exception:
         return _scrape_with_regex(text, result)
+
+
+def _validate_external_url(url: str) -> None:
+    """Reject URL targets that could be used to access local network services."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("URL must be a non-empty string")
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL must use HTTP(S) and include a hostname")
+    if parsed.username or parsed.password:
+        raise ValueError("URL must not contain credentials")
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ValueError("URL must not target localhost")
+
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return
+
+    if not address.is_global:
+        raise ValueError("URL must target a public IP address")
 
 
 def _build_create_properties(
