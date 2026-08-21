@@ -42,6 +42,10 @@ class FakeNotion:
         self.calls.append((page_id, properties))
         return True
 
+    def create_page(self, database_id, properties, prop_name_map=None):
+        self.calls.append((database_id, properties, prop_name_map))
+        return "new-page-id"
+
 
 def test_extract_formatted_field_and_monday_helpers():
     assert main_mod.extract_formatted_field("{'string': 'x'}") == "x"
@@ -106,6 +110,107 @@ def test_prepare_dataframe_transforms_columns():
     assert df["RAV"].iloc[0] == "false"
     assert df["Arbeitspensum"].iloc[0] == "false"
     assert df["Status"].iloc[0] == "false"
+
+
+def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
+    class Response:
+        text = (
+            "<html><title>Engineer</title>"
+            '<meta name="description" content="Build systems">'
+            "<h1>Senior Engineer</h1></html>"
+        )
+
+    monkeypatch.setattr(main_mod.httpx, "get", lambda url, timeout: Response())
+
+    result = main_mod._scrape_url("https://example.com/jobs/1")
+
+    assert result == {
+        "url": "https://example.com/jobs/1",
+        "title": "Engineer",
+        "description": "Build systems",
+        "h1": "Senior Engineer",
+    }
+
+
+def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
+    class Response:
+        text = (
+            "<html><title>Engineer</title>"
+            '<meta property="og:description" content="Ship products">'
+            "<h1>Platform Engineer</h1></html>"
+        )
+
+    monkeypatch.setattr(main_mod.httpx, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        main_mod,
+        "BeautifulSoup",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("parser error")),
+    )
+
+    result = main_mod._scrape_url("https://example.com/jobs/2")
+
+    assert result["title"] == "Engineer"
+    assert result["description"] == "Ship products"
+    assert result["h1"] == "Platform Engineer"
+
+
+def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
+    def raise_error(url, timeout):
+        raise RuntimeError("network unavailable")
+
+    monkeypatch.setattr(main_mod.httpx, "get", raise_error)
+
+    assert main_mod._scrape_url("https://example.com/jobs/3") == {
+        "url": "https://example.com/jobs/3"
+    }
+
+
+def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {
+            "url": url,
+            "title": "Scraped title",
+            "description": "Scraped description",
+        },
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(
+        notion,
+        "https://jobs.example/1",
+        dry_run=True,
+        prop_name_map={"Company": "Firma", "Role": "Stelle"},
+        company_override="Acme",
+        role_override="Developer",
+    )
+
+    output = capsys.readouterr().out
+    assert "'Firma': {'title': [{'text': {'content': 'Acme'}}]}" in output
+    assert "'Stelle': {'rich_text': [{'text': {'content': 'Developer'}}]}" in output
+    assert "'URL': {'url': 'https://jobs.example/1'}" in output
+    assert notion.calls == []
+
+
+def test_run_create_calls_notion_with_default_mapping(monkeypatch):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {"url": url, "h1": "Data Engineer"},
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(notion, "https://jobs.example/2")
+
+    database_id, properties, prop_name_map = notion.calls[0]
+    assert database_id == main_mod.DATABASE_ID
+    assert properties["Company"] == "jobs.example"
+    assert properties["Role"] == "Data Engineer"
+    assert properties["URL"] == "https://jobs.example/2"
+    assert properties["Type"] == "electronic"
+    assert "Tracked" not in properties
+    assert prop_name_map is None
 
 
 def test_create_driver_builds_driver_and_wait(monkeypatch):
