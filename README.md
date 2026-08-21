@@ -94,9 +94,6 @@ mise run create 'https://example.com/job' --company='MyCo' --role='Engineer'
 
 The `--prop-map` JSON file should map canonical keys (Company, Role, URL, Applied date, Description, Tracked) to the Notion database property names.
 
-
-## Usage
-
 ### Run with uv
 
 ```bash

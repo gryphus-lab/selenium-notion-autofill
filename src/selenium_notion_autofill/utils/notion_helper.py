@@ -1,9 +1,55 @@
 """Helper class for interacting with Notion API."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Mapping
 
 import httpx
 import pandas as pd
+
+
+def build_notion_properties(
+    properties: Dict[str, Any],
+    prop_name_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Convert simple scalar properties to Notion API property objects."""
+    notion_props: Dict[str, Any] = {}
+
+    for key, val in properties.items():
+        if val is None:
+            continue
+
+        actual_name = _actual_property_name(key, prop_name_map)
+        notion_props[actual_name] = _build_notion_property(key, val)
+
+    return notion_props
+
+
+def _actual_property_name(
+    key: str, prop_name_map: Optional[Mapping[str, str]]
+) -> str:
+    if isinstance(prop_name_map, Mapping):
+        return prop_name_map.get(key, key)
+    return key
+
+
+def _build_notion_property(key: str, val: Any) -> Dict[str, Any]:
+    canonical = key.lower()
+    if canonical == "company":
+        return {"title": [_text_property(val)]}
+    if canonical in ("url", "website", "link"):
+        return {"url": str(val)}
+    if canonical == "email":
+        return {"email": str(val)}
+    if canonical in ("phone", "phone_number"):
+        return {"phone_number": str(val)}
+    if isinstance(val, bool):
+        return {"checkbox": val}
+    if isinstance(val, (int, float)):
+        return {"number": val}
+    return {"rich_text": [_text_property(val)]}
+
+
+def _text_property(val: Any) -> Dict[str, Dict[str, str]]:
+    return {"text": {"content": str(val)}}
 
 
 class NotionHelper:
@@ -106,46 +152,24 @@ class NotionHelper:
             print(f"   ❌ Exception while updating Notion row: {exc}")
             return False
 
-    def create_page(self, database_id: str, properties: Dict[str, Any], prop_name_map: Optional[Dict[str, str]] = None) -> Optional[str]:
+    def create_page(
+        self,
+        database_id: str,
+        properties: Dict[str, Any],
+        prop_name_map: Optional[Dict[str, str]] = None,
+    ) -> Optional[str]:
         """Create a new page (row) in a Notion database from simple properties.
 
-        properties: mapping of canonical property names (Company, Role, URL, Applied date, Description, Tracked)
-        to scalar values. If prop_name_map is provided it should map canonical names
-        to the actual property names used in the target Notion database.
+        properties: mapping of canonical property names (Company, Role, URL,
+        Applied date, Description, Tracked)to scalar values. If prop_name_map is
+        provided it should map canonical names to the actual property names used
+        in the target Notion database.
 
         Returns the created page id on success or None on failure.
         """
         url = f"{self.base_url}/pages"
 
-        notion_props: Dict[str, Any] = {}
-
-        for key, val in properties.items():
-            if val is None:
-                continue
-
-            # Determine the actual property name in Notion
-            actual_name = prop_name_map.get(key, key) if isinstance(prop_name_map, dict) else key
-
-            # Common mappings based on canonical key
-            canonical = key.lower()
-            if canonical == "company":
-                notion_props[actual_name] = {"title": [{"text": {"content": str(val)}}]}
-            elif canonical == "role":
-                notion_props[actual_name] = {"rich_text": [{"text": {"content": str(val)}}]}
-            elif canonical in ("url", "website", "link"):
-                notion_props[actual_name] = {"url": str(val)}
-            elif canonical in ("email",):
-                notion_props[actual_name] = {"email": str(val)}
-            elif canonical in ("phone", "phone_number"):
-                notion_props[actual_name] = {"phone_number": str(val)}
-            elif isinstance(val, bool):
-                notion_props[actual_name] = {"checkbox": bool(val)}
-            elif isinstance(val, (int, float)):
-                notion_props[actual_name] = {"number": val}
-            else:
-                # Fallback to rich_text to preserve readable content
-                notion_props[actual_name] = {"rich_text": [{"text": {"content": str(val)}}]}
-
+        notion_props = build_notion_properties(properties, prop_name_map)
         payload = {"parent": {"database_id": database_id}, "properties": notion_props}
 
         try:
@@ -153,7 +177,11 @@ class NotionHelper:
             if res.status_code in (200, 201):
                 data = res.json()
                 page_id = data.get("id")
-                print(f"   ✅ Notion page created (ID: {page_id[:8]}...)" if page_id else "   ✅ Notion page created")
+                print(
+                    f"   ✅ Notion page created (ID: {page_id[:8]}...)"
+                    if page_id
+                    else "   ✅ Notion page created"
+                )
                 return page_id
             print(f"   ❌ Failed to create Notion page: {res.status_code} - {res.text}")
             return None

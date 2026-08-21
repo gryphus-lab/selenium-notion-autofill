@@ -2,12 +2,18 @@
 """Notion → Selenium Autofill Script - Main entry point."""
 
 import ast
+import argparse
+import json
 import shutil
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
+from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
+import httpx
+from bs4 import BeautifulSoup, Tag
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -29,11 +35,7 @@ except ImportError:  # pragma: no cover - optional dependency
     import shutil
 
 from selenium_notion_autofill.utils import NotionHelper
-import httpx
-import re
-import json
-from urllib.parse import urlparse
-from bs4 import BeautifulSoup
+from selenium_notion_autofill.utils.notion_helper import build_notion_properties
 from selenium_notion_autofill.utils.selenium_helper import (
     handle_login,
     process_records,
@@ -181,65 +183,61 @@ def _create_driver():
     return driver, wait
 
 
+CREATE_USAGE = (
+    "uv run -m selenium_notion_autofill create <url> [--dry-run] "
+    "[--prop-map=path] [--company=NAME] [--role=TITLE]"
+)
+
+
+def _create_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="uv run -m selenium_notion_autofill create")
+    parser.add_argument("url")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--prop-map")
+    parser.add_argument("--company", dest="company_override")
+    parser.add_argument("--role", dest="role_override")
+    return parser
+
+
+def _load_prop_name_map(prop_map: str | None) -> dict[str, str] | None:
+    if not prop_map:
+        return None
+
+    try:
+        with open(prop_map, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        print(f"Could not load prop-map file {prop_map}: {exc}")
+        sys.exit(1)
+
+
+def _run_create_from_args(notion, args: list[str]) -> None:
+    if not args:
+        print(f"Usage: {CREATE_USAGE}")
+        sys.exit(1)
+
+    parsed_args = _create_arg_parser().parse_args(args)
+    _run_create(
+        notion,
+        parsed_args.url,
+        dry_run=parsed_args.dry_run,
+        prop_name_map=_load_prop_name_map(parsed_args.prop_map),
+        company_override=parsed_args.company_override,
+        role_override=parsed_args.role_override,
+    )
+
+
 def main():
     """Main entry point for the autofill script."""
     mode = sys.argv[1] if len(sys.argv) > 1 else "new"
 
     notion = NotionHelper(NOTION_API_KEY)
-    # Ensure the NotionHelper sends the actual API key in Authorization
-    try:
-        notion.headers["Authorization"] = f"Bearer {NOTION_API_KEY}"
-    except Exception:
-        pass
-
     if mode == "update-rejections":
         _run_update_rejections(notion)
     elif mode == "new":
         _run_new_entries(notion)
     elif mode == "create":
-        # Parse simple flags: --dry-run, --prop-map=path, --company=..., --role=...
-        args = sys.argv[2:]
-        if not args:
-            print("Usage: uv run -m selenium_notion_autofill create <url> [--dry-run] [--prop-map=path] [--company=NAME] [--role=TITLE]")
-            sys.exit(1)
-
-        url = None
-        dry_run = False
-        prop_map = None
-        company_override = None
-        role_override = None
-
-        for a in args:
-            if a == "--dry-run":
-                dry_run = True
-                continue
-            if a.startswith("--prop-map="):
-                prop_map = a.split("=", 1)[1]
-                continue
-            if a.startswith("--company="):
-                company_override = a.split("=", 1)[1]
-                continue
-            if a.startswith("--role="):
-                role_override = a.split("=", 1)[1]
-                continue
-            if url is None:
-                url = a
-
-        if url is None:
-            print("No URL provided")
-            sys.exit(1)
-
-        # If prop_map is a path to a JSON file, try to load it
-        prop_name_map = None
-        if prop_map:
-            try:
-                with open(prop_map, "r", encoding="utf-8") as fh:
-                    prop_name_map = json.load(fh)
-            except Exception as exc:
-                print(f"Could not load prop-map file {prop_map}: {exc}")
-                sys.exit(1)
-
-        _run_create(notion, url, dry_run=dry_run, prop_name_map=prop_name_map, company_override=company_override, role_override=role_override)
+        _run_create_from_args(notion, sys.argv[2:])
     else:
         print(f"Unknown mode: {mode}")
         print("Usage: uv run -m selenium_notion_autofill [new|update-rejections|create]")
@@ -327,11 +325,19 @@ def _scrape_url(url: str) -> dict:
     if m:
         result["title"] = m.group(1).strip()
 
-    m = re.search(r"<meta[^>]+name=[\"']description[\"'][^>]*content=[\"'](.*?)[\"']", text, re.IGNORECASE | re.DOTALL)
+    m = re.search(
+        r"<meta[^>]+name=[\"']description[\"'][^>]*content=[\"'](.*?)[\"']",
+        text,
+        re.IGNORECASE | re.DOTALL,
+    )
     if m:
         result["description"] = m.group(1).strip()
     else:
-        m = re.search(r"<meta[^>]+property=[\"']og:description[\"'][^>]*content=[\"'](.*?)[\"']", text, re.IGNORECASE | re.DOTALL)
+        m = re.search(
+            r"<meta[^>]+property=[\"']og:description[\"'][^>]*content=[\"'](.*?)[\"']",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
         if m:
             result["description"] = m.group(1).strip()
 
@@ -342,7 +348,14 @@ def _scrape_url(url: str) -> dict:
     return result
 
 
-def _run_create(notion, url: str, dry_run: bool = False, prop_name_map: dict | None = None, company_override: str | None = None, role_override: str | None = None):
+def _run_create(
+    notion,
+    url: str,
+    dry_run: bool = False,
+    prop_name_map: dict | None = None,
+    company_override: str | None = None,
+    role_override: str | None = None,
+):
     """Create a Notion page using the same property names the Selenium script expects.
 
     The database field names must align with `FIELD_SELECTORS` keys, which are the
@@ -396,9 +409,9 @@ def _run_create(notion, url: str, dry_run: bool = False, prop_name_map: dict | N
             actual_name = final_map.get(key, key) if final_map else key
             canonical = key.lower()
             if canonical == "company":
-                notion_payload[actual_name] = {"title": [{"text": {"content": str(val)}}]}
-            elif canonical == "role":
-                notion_payload[actual_name] = {"rich_text": [{"text": {"content": str(val)}}]}
+                notion_payload[actual_name] = {
+                    "title": [{"text": {"content": str(val)}}]
+                }
             elif canonical in ("url", "website", "link"):
                 notion_payload[actual_name] = {"url": str(val)}
             elif canonical in ("email",):
@@ -410,7 +423,9 @@ def _run_create(notion, url: str, dry_run: bool = False, prop_name_map: dict | N
             elif isinstance(val, (int, float)):
                 notion_payload[actual_name] = {"number": val}
             else:
-                notion_payload[actual_name] = {"rich_text": [{"text": {"content": str(val)}}]}
+                notion_payload[actual_name] = {
+                    "rich_text": [{"text": {"content": str(val)}}]
+                }
 
         print("--- Dry run: Notion payload to create ---")
         print(notion_payload)
