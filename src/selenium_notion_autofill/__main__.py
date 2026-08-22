@@ -8,11 +8,12 @@ import json
 import re
 import shutil
 import socket
+import ssl
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpcore
 import httpx
@@ -30,6 +31,7 @@ from selenium_notion_autofill.config import (
     FIELD_SELECTORS,
     NOTION_API_KEY,
     NOTION_PROPERTY_MAP,
+    validate_property_map,
 )
 
 try:
@@ -49,6 +51,19 @@ from selenium_notion_autofill.utils.selenium_helper import (
 LAST_UPDATE_DATE = "Last Update Date"
 UPDATE_DETAILS = "Update Details"
 MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
+MAX_REDIRECTS = 5
+NOTION_RICH_TEXT_LIMIT = 2000
+OPTIONAL_CREATE_FIELDS = (
+    "Description",
+    "Stage",
+    "Source",
+    "Notes",
+    LAST_UPDATE_DATE,
+    UPDATE_DETAILS,
+)
+HOSTNAME_COMPANY_MAP = {
+    r"(?:^|\.)careers\.zurich\.com$": "Zurich Insurance",
+}
 
 
 class _DocumentTooLargeError(RuntimeError):
@@ -223,12 +238,7 @@ def _load_prop_name_map(prop_map: str | None) -> dict[str, str] | None:
 
         with prop_map_path.open("r", encoding="utf-8") as fh:
             parsed_map = json.load(fh)
-        if not isinstance(parsed_map, dict) or not all(
-            isinstance(key, str) and isinstance(value, str)
-            for key, value in parsed_map.items()
-        ):
-            raise ValueError("must be a JSON object with string keys and values")
-        return parsed_map
+        return validate_property_map(parsed_map)
     except Exception as exc:
         print(f"Could not load prop-map file {prop_map}: {exc}")
         sys.exit(1)
@@ -392,6 +402,12 @@ class _PinnedNetworkBackend(httpcore.NetworkBackend):
             self.address, port, timeout, local_address, socket_options
         )
 
+    def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        return self.backend.connect_unix_socket(path, timeout, socket_options)
+
+    def sleep(self, seconds):
+        return self.backend.sleep(seconds)
+
 
 class _LimitedResponseStream(httpx.SyncByteStream):
     def __init__(self, core_response: httpcore.Response):
@@ -413,10 +429,14 @@ class _LimitedResponseStream(httpx.SyncByteStream):
 
 
 class _PinnedTransport(httpx.BaseTransport):
-    def __init__(self, address: str):
+    def __init__(self, address: str, hostname: str):
         self.address = address
+        self.hostname = hostname
+        self.ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+        self.ssl_context.check_hostname = True
+        self.ssl_context.verify_mode = ssl.CERT_REQUIRED
         self.pool = httpcore.ConnectionPool(
-            network_backend=_PinnedNetworkBackend(address)
+            ssl_context=self.ssl_context, network_backend=_PinnedNetworkBackend(address)
         )
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
@@ -425,7 +445,10 @@ class _PinnedTransport(httpx.BaseTransport):
             str(request.url),
             headers=request.headers.raw,
             content=request.content,
-            extensions=request.extensions,
+            extensions={
+                **request.extensions,
+                "sni_hostname": self.hostname,
+            },
         )
         core_response = self.pool.handle_request(core_request)
         content_length = next(
@@ -438,7 +461,8 @@ class _PinnedTransport(httpx.BaseTransport):
         )
         if content_length is not None:
             try:
-                if int(content_length) > MAX_DOCUMENT_BYTES:
+                declared_length = int(content_length)
+                if declared_length < 0 or declared_length > MAX_DOCUMENT_BYTES:
                     core_response.close()
                     raise _DocumentTooLargeError("response exceeds document size limit")
             except (TypeError, ValueError):
@@ -460,21 +484,44 @@ class _PinnedTransport(httpx.BaseTransport):
         self.pool.close()
 
 
+def _fetch_url(url: str, address: str) -> tuple[httpx.Response, str]:
+    hostname = urlparse(url).hostname
+    if hostname is None:
+        raise ValueError("URL must include a hostname")
+    with httpx.Client(
+        transport=_PinnedTransport(address, hostname),
+        timeout=15,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        response = client.get(url)
+    return response, response.text or ""
+
+
+def _redirect_location(response: httpx.Response) -> str | None:
+    if 300 <= response.status_code < 400:
+        return getattr(response, "headers", {}).get("location")
+    return None
+
+
 def _scrape_url(url: str) -> dict:
     """Scrape a URL to extract title, description and first h1."""
-    address = _validate_external_url(url)
-    try:
-        with httpx.Client(
-            transport=_PinnedTransport(address),
-            timeout=15,
-            follow_redirects=False,
-            trust_env=False,
-        ) as client:
-            resp = client.get(url)
-        text = resp.text or ""
-    except Exception as exc:
-        print(f"   ❌ Could not fetch URL {url}: {exc}")
-        return {"url": url}
+    current_url = url
+    for redirect_count in range(MAX_REDIRECTS + 1):
+        address = _validate_external_url(current_url)
+        try:
+            resp, text = _fetch_url(current_url, address)
+            location = _redirect_location(resp)
+            if location and redirect_count < MAX_REDIRECTS:
+                current_url = urljoin(current_url, location)
+                continue
+            break
+        except _DocumentTooLargeError:
+            print(f"   ❌ Could not fetch URL {url}: document exceeds size limit")
+            return {"url": url}
+        except Exception as exc:
+            print(f"   ❌ Could not fetch URL {url}: {exc}")
+            return {"url": url}
 
     result = {"url": url}
     try:
@@ -482,10 +529,8 @@ def _scrape_url(url: str) -> dict:
     except Exception:
         result = _scrape_with_regex(text, result)
 
-    status_code = getattr(resp, "status_code", 200)
-    if status_code in {401, 403, 429} or 300 <= status_code < 400:
-        result["blocked"] = "The website returned an access-blocked page"
-    else:
+    status_code = resp.status_code
+    if 200 <= status_code < 300:
         heading_fields = " ".join(
             str(result.get(field, "")) for field in ("title", "h1")
         ).lower()
@@ -498,6 +543,10 @@ def _scrape_url(url: str) -> dict:
             for marker in ("access denied", "unusual traffic", "robot check")
         ):
             result["blocked"] = "The website returned an access-blocked page"
+    elif status_code in {403, 429}:
+        result["blocked"] = "The website returned an access-blocked page"
+    else:
+        result["blocked"] = f"The website returned HTTP {status_code}"
     return result
 
 
@@ -557,29 +606,20 @@ def _source_from_url(url: str) -> str:
     return "Company site"
 
 
-def _resolve_company_name(hostname: str, company_override: str | None) -> str:
+def _resolve_company_name(company: str, company_override: str | None) -> str:
     if company_override:
         return company_override
-    hostname_lower = hostname.rstrip(".").lower()
-    if hostname_lower == "careers.zurich.com" or hostname_lower.endswith(
-        ".careers.zurich.com"
-    ):
-        return "Zurich Insurance"
-    return hostname
+    normalized_company = company.rstrip(".").lower()
+    for hostname_pattern, company_name in HOSTNAME_COMPANY_MAP.items():
+        if re.search(hostname_pattern, normalized_company):
+            return company_name
+    return company
 
 
 def _remove_unmapped_optional_properties(
     properties: dict[str, object], final_map: dict[str, str] | None
 ) -> None:
-    optional_fields = (
-        "Description",
-        "Stage",
-        "Source",
-        "Notes",
-        LAST_UPDATE_DATE,
-        UPDATE_DETAILS,
-    )
-    for field_name in optional_fields:
+    for field_name in OPTIONAL_CREATE_FIELDS:
         if field_name not in FIELD_SELECTORS and field_name not in (final_map or {}):
             properties.pop(field_name, None)
 
@@ -587,12 +627,12 @@ def _remove_unmapped_optional_properties(
 def _build_create_properties(
     url: str,
     scraped: dict,
-    hostname: str,
+    company: str,
     title: str,
 ) -> dict[str, object]:
     today_iso = datetime.now(timezone.utc).date().isoformat()
     values = {
-        "Company": hostname,
+        "Company": company,
         "Role": title,
         "URL": url,
         "Date": today_iso,
@@ -601,26 +641,27 @@ def _build_create_properties(
         "Tracked": False,
         "Stage": "Applied",
         "Source": _source_from_url(url),
-        "Notes": (scraped.get("text") or "")[:2000],
+        "Notes": _truncate_optional_text(scraped.get("text")),
         LAST_UPDATE_DATE: today_iso,
         UPDATE_DETAILS: "New entry",
-        "Description": scraped.get("description") or "",
+        "Description": _truncate_optional_text(scraped.get("description")),
     }
     properties: dict[str, object] = {
         field_name: values[field_name]
         for field_name in (
             *FIELD_SELECTORS,
             APPLIED_DATE,
-            "Stage",
-            "Source",
-            "Notes",
-            LAST_UPDATE_DATE,
-            UPDATE_DETAILS,
-            "Description",
+            *OPTIONAL_CREATE_FIELDS,
         )
         if field_name in values
     }
     return properties
+
+
+def _truncate_optional_text(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value[:NOTION_RICH_TEXT_LIMIT]
+    return None
 
 
 def _build_dry_run_payload(
@@ -661,7 +702,7 @@ def _log_prepared_properties(properties: dict[str, object]) -> None:
 
 def _resolve_property_map(prop_name_map: dict | None) -> dict | None:
     selected_map = prop_name_map if prop_name_map else NOTION_PROPERTY_MAP
-    return selected_map if selected_map and isinstance(selected_map, dict) else None
+    return validate_property_map(selected_map) if selected_map else None
 
 
 def _create_notion_page(notion, properties: dict[str, object], final_map: dict | None):
@@ -684,12 +725,16 @@ def _run_create(
     same names used by the rest of the automation. This keeps the new URL entry
     feature consistent with the Job-Room autofill flow.
     """
-    scraped = _scrape_url(url)
+    try:
+        scraped = _scrape_url(url)
+    except ValueError as exc:
+        print(f"❌ Could not scrape URL {url}: {exc}")
+        sys.exit(1)
 
     _log_scraped_values(url, scraped)
     if scraped.get("blocked"):
         print(f"❌ Notion entry was not created: {scraped['blocked']}")
-        return
+        sys.exit(1)
 
     final_map = _resolve_property_map(prop_name_map)
 
@@ -697,8 +742,8 @@ def _run_create(
     hostname = parsed.hostname or parsed.netloc or url
 
     title = role_override or scraped.get("h1") or scraped.get("title") or hostname
-    hostname = _resolve_company_name(hostname, company_override)
-    properties = _build_create_properties(url, scraped, hostname, title)
+    company = _resolve_company_name(hostname, company_override)
+    properties = _build_create_properties(url, scraped, company, title)
     _remove_unmapped_optional_properties(properties, final_map)
 
     _log_prepared_properties(properties)

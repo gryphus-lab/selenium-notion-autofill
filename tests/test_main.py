@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
+import httpx
 
 from selenium_notion_autofill import __main__ as main_mod
 
@@ -29,8 +30,11 @@ class FakeWait:
         self.timeout = timeout
 
 
-def _client_for_response(response):
+def _client_for_response(response, **kwargs):
     class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
         def __enter__(self):
             return self
 
@@ -40,7 +44,7 @@ def _client_for_response(response):
         def get(self, url):
             return response
 
-    return FakeClient()
+    return FakeClient(**kwargs)
 
 
 class FakeNotion:
@@ -128,6 +132,7 @@ def test_prepare_dataframe_transforms_columns():
 
 def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
     class Response:
+        status_code = 200
         text = (
             "<html><title>Engineer</title>"
             '<meta name="description" content="Build systems">'
@@ -151,6 +156,7 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
 
 def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
     class Response:
+        status_code = 200
         text = (
             "<html><title>Engineer</title>"
             '<meta property="og:description" content="Ship products">'
@@ -267,7 +273,8 @@ def test_run_create_does_not_create_page_for_blocked_scrape(monkeypatch, capsys)
     )
     notion = FakeNotion()
 
-    main_mod._run_create(notion, "https://93.184.216.34/jobs/blocked")
+    with pytest.raises(SystemExit):
+        main_mod._run_create(notion, "https://93.184.216.34/jobs/blocked")
 
     output = capsys.readouterr().out
     assert "Notion entry was not created: blocked" in output
@@ -285,10 +292,10 @@ def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
         def get(self, url):
             raise RuntimeError("network unavailable")
 
-    def raise_error(**kwargs):
+    def fake_client_for_network_error(**kwargs):
         return FakeClient()
 
-    monkeypatch.setattr(main_mod.httpx, "Client", raise_error)
+    monkeypatch.setattr(main_mod.httpx, "Client", fake_client_for_network_error)
 
     assert main_mod._scrape_url("https://93.184.216.34/jobs/3") == {
         "url": "https://93.184.216.34/jobs/3"
@@ -319,6 +326,7 @@ def test_scrape_url_disables_redirects(monkeypatch):
     calls = []
 
     class Response:
+        status_code = 200
         text = ""
 
     class FakeClient:
@@ -364,13 +372,31 @@ def test_scrape_url_uses_validated_dns_address(monkeypatch):
             return None
 
         def get(self, url):
-            return type("Response", (), {"text": ""})()
+            return type("Response", (), {"status_code": 200, "text": ""})()
 
     monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
 
     main_mod._scrape_url("https://example.com/job")
 
     assert calls == ["93.184.216.34"]
+
+
+def test_pinned_network_backend_delegates_pinned_tcp_connection():
+    backend = object.__new__(main_mod._PinnedNetworkBackend)
+    backend.address = "93.184.216.34"
+    calls = []
+
+    class FakeBackend:
+        def connect_tcp(self, *args):
+            calls.append(args)
+            return "stream"
+
+    backend.backend = FakeBackend()
+
+    assert backend.connect_tcp("example.com", 443, 2, "local", ["option"]) == (
+        "stream"
+    )
+    assert calls == [("93.184.216.34", 443, 2, "local", ["option"])]
 
 
 def test_scrape_url_pins_to_validated_address_preventing_dns_rebinding(monkeypatch):
@@ -449,6 +475,127 @@ def test_scrape_url_accepts_hostname_with_public_dns(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("status_code", [300, 500])
+def test_scrape_url_marks_all_non_success_statuses_blocked(monkeypatch, status_code):
+    response = type("Response", (), {"status_code": status_code, "text": ""})()
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(response)
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/status")
+
+    assert result["blocked"] == f"The website returned HTTP {status_code}"
+
+
+def test_scrape_url_reports_general_http_failure_status(monkeypatch):
+    response = type("Response", (), {"status_code": 404, "text": ""})()
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(response)
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/missing")
+
+    assert result["blocked"] == "The website returned HTTP 404"
+
+
+def test_scrape_url_follows_bounded_validated_redirects(monkeypatch):
+    responses = iter(
+        [
+            type(
+                "Response",
+                (),
+                {"status_code": 302, "headers": {"location": "/next"}, "text": ""},
+            )(),
+            type("Response", (), {"status_code": 200, "headers": {}, "text": ""})(),
+        ]
+    )
+    requested_urls = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, requested_url):
+            requested_urls.append(requested_url)
+            return next(responses)
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
+
+    main_mod._scrape_url("https://93.184.216.34/jobs/start")
+
+    assert requested_urls == [
+        "https://93.184.216.34/jobs/start",
+        "https://93.184.216.34/next",
+    ]
+
+
+def test_scrape_url_validates_redirect_target(monkeypatch):
+    response = type(
+        "Response",
+        (),
+        {
+            "status_code": 302,
+            "headers": {"location": "http://127.0.0.1/private"},
+            "text": "",
+        },
+    )()
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(response)
+    )
+
+    with pytest.raises(ValueError):
+        main_mod._scrape_url("https://93.184.216.34/jobs/start")
+
+
+class StubCoreResponse:
+    def __init__(self, headers, chunks=()):
+        self.status = 200
+        self.headers = headers
+        self.extensions = {}
+        self.chunks = chunks
+        self.closed = False
+
+    def iter_stream(self):
+        yield from self.chunks
+
+    def close(self):
+        self.closed = True
+
+
+def test_pinned_transport_rejects_oversized_content_length_and_closes_response():
+    core_response = StubCoreResponse(
+        [(b"content-length", str(main_mod.MAX_DOCUMENT_BYTES + 1).encode())]
+    )
+    transport = object.__new__(main_mod._PinnedTransport)
+    transport.hostname = "example.com"
+    transport.pool = type(
+        "Pool", (), {"handle_request": lambda self, request: core_response}
+    )()
+
+    with pytest.raises(main_mod._DocumentTooLargeError):
+        transport.handle_request(httpx.Request("GET", "https://example.com"))
+
+    assert core_response.closed
+
+
+def test_limited_response_stream_rejects_oversized_stream_without_content_length():
+    core_response = StubCoreResponse(
+        [], (b"x" * main_mod.MAX_DOCUMENT_BYTES, b"overflow")
+    )
+    stream = main_mod._LimitedResponseStream(core_response)
+
+    with pytest.raises(main_mod._DocumentTooLargeError):
+        list(stream)
+
+    assert core_response.closed
+
+
 def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     monkeypatch.setattr(
         main_mod,
@@ -513,6 +660,25 @@ def test_run_create_populates_zurich_fields(monkeypatch):
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
     assert "Update Details" not in properties
+
+
+def test_run_create_retains_optional_fields_in_property_map(monkeypatch):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {"url": url, "text": "Notes text", "description": "Description text"},
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(
+        notion,
+        "https://93.184.216.34/jobs/1",
+        prop_name_map={"Notes": "Job notes", "Source": "Origin"},
+    )
+
+    _, properties, _ = notion.calls[0]
+    assert properties["Notes"] == "Notes text"
+    assert properties["Source"] == "Company site"
 
 
 @pytest.mark.parametrize(

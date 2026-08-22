@@ -16,12 +16,17 @@ def _required_setting(name: str) -> str:
     return value
 
 
+def validate_property_map(value: object) -> dict[str, str]:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise ValueError("must be a JSON object with string keys and values")
+    return value
+
+
 # From Notion Integrations — set these in your .env file, never commit them.
 NOTION_API_KEY = _required_setting("NOTION_API_KEY")
 DATABASE_ID = _required_setting("DATABASE_ID")
-
-# Website selectors
-WEBSITE_URL = _required_setting("WEBSITE_URL")
 
 APPLIED_DATE = "Applied date"
 EXIT_MESSAGE = "     Exiting...\n"
@@ -67,14 +72,13 @@ NOTION_PROPERTY_MAP = None
 if NOTION_PROPERTY_MAP_JSON:
     try:
         parsed_property_map = json.loads(NOTION_PROPERTY_MAP_JSON)
-        if not isinstance(parsed_property_map, dict) or not all(
-            isinstance(key, str) and isinstance(value, str)
-            for key, value in parsed_property_map.items()
-        ):
-            raise ValueError("must be a JSON object with string keys and values")
-        NOTION_PROPERTY_MAP = parsed_property_map
+        NOTION_PROPERTY_MAP = validate_property_map(parsed_property_map)
     except ValueError as exc:
         raise RuntimeError(
             "Invalid NOTION_PROPERTY_MAP_JSON: expected a JSON object "
             "with string keys and values"
         ) from exc
+
+
+def get_website_url() -> str:
+    return _required_setting("WEBSITE_URL")

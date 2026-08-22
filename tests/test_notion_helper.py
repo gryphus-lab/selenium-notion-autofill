@@ -41,11 +41,17 @@ def test_build_notion_properties_maps_dates_and_type():
     }
 
 
-@pytest.mark.parametrize("key", ["last_update_date", "last update date"])
-def test_build_notion_properties_normalizes_underscore_date_names(key):
-    assert build_notion_properties({key: "2024-01-17"}) == {
-        key: {"date": {"start": "2024-01-17"}}
-    }
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("last_update_date", "2024-01-17", {"date": {"start": "2024-01-17"}}),
+        ("last update date", "2024-01-17", {"date": {"start": "2024-01-17"}}),
+        ("phone_number", "+41123456789", {"phone_number": "+41123456789"}),
+        ("custom_field", "value", {"rich_text": [{"text": {"content": "value"}}]}),
+    ],
+)
+def test_build_notion_properties_normalizes_underscore_date_names(key, value, expected):
+    assert build_notion_properties({key: value}) == {key: expected}
 
 
 @pytest.mark.parametrize(
