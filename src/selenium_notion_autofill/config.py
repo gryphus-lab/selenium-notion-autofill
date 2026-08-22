@@ -73,7 +73,7 @@ if NOTION_PROPERTY_MAP_JSON:
         ):
             raise ValueError("must be a JSON object with string keys and values")
         NOTION_PROPERTY_MAP = parsed_property_map
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         raise RuntimeError(
             "Invalid NOTION_PROPERTY_MAP_JSON: expected a JSON object "
             "with string keys and values"

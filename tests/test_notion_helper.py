@@ -41,6 +41,13 @@ def test_build_notion_properties_maps_dates_and_type():
     }
 
 
+@pytest.mark.parametrize("key", ["last_update_date", "last update date"])
+def test_build_notion_properties_normalizes_underscore_date_names(key):
+    assert build_notion_properties({key: "2024-01-17"}) == {
+        key: {"date": {"start": "2024-01-17"}}
+    }
+
+
 @pytest.mark.parametrize(
     ("key", "value", "expected"),
     [

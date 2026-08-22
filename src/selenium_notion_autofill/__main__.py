@@ -428,6 +428,21 @@ class _PinnedTransport(httpx.BaseTransport):
             extensions=request.extensions,
         )
         core_response = self.pool.handle_request(core_request)
+        content_length = next(
+            (
+                value
+                for name, value in core_response.headers
+                if name.lower() == b"content-length"
+            ),
+            None,
+        )
+        if content_length is not None:
+            try:
+                if int(content_length) > MAX_DOCUMENT_BYTES:
+                    core_response.close()
+                    raise _DocumentTooLargeError("response exceeds document size limit")
+            except (TypeError, ValueError):
+                pass
         response_stream = _LimitedResponseStream(core_response)
         try:
             return httpx.Response(
@@ -468,7 +483,7 @@ def _scrape_url(url: str) -> dict:
         result = _scrape_with_regex(text, result)
 
     status_code = getattr(resp, "status_code", 200)
-    if status_code in {401, 403, 429}:
+    if status_code in {401, 403, 429} or 300 <= status_code < 400:
         result["blocked"] = "The website returned an access-blocked page"
     else:
         heading_fields = " ".join(
@@ -540,6 +555,33 @@ def _source_from_url(url: str) -> str:
     if hostname == "indeed.com" or hostname.endswith(".indeed.com"):
         return "Indeed"
     return "Company site"
+
+
+def _resolve_company_name(hostname: str, company_override: str | None) -> str:
+    if company_override:
+        return company_override
+    hostname_lower = hostname.rstrip(".").lower()
+    if hostname_lower == "careers.zurich.com" or hostname_lower.endswith(
+        ".careers.zurich.com"
+    ):
+        return "Zurich Insurance"
+    return hostname
+
+
+def _remove_unmapped_optional_properties(
+    properties: dict[str, object], final_map: dict[str, str] | None
+) -> None:
+    optional_fields = (
+        "Description",
+        "Stage",
+        "Source",
+        "Notes",
+        LAST_UPDATE_DATE,
+        UPDATE_DETAILS,
+    )
+    for field_name in optional_fields:
+        if field_name not in FIELD_SELECTORS and field_name not in (final_map or {}):
+            properties.pop(field_name, None)
 
 
 def _build_create_properties(
@@ -655,17 +697,9 @@ def _run_create(
     hostname = parsed.hostname or parsed.netloc or url
 
     title = role_override or scraped.get("h1") or scraped.get("title") or hostname
-    hostname_lower = hostname.rstrip(".").lower()
-    if not company_override and (
-        hostname_lower == "careers.zurich.com"
-        or hostname_lower.endswith(".careers.zurich.com")
-    ):
-        hostname = "Zurich Insurance"
-    else:
-        hostname = company_override or hostname
+    hostname = _resolve_company_name(hostname, company_override)
     properties = _build_create_properties(url, scraped, hostname, title)
-    if "Description" not in FIELD_SELECTORS and "Description" not in (final_map or {}):
-        properties.pop("Description")
+    _remove_unmapped_optional_properties(properties, final_map)
 
     _log_prepared_properties(properties)
 

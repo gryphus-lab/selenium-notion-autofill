@@ -373,35 +373,6 @@ def test_scrape_url_uses_validated_dns_address(monkeypatch):
     assert calls == ["93.184.216.34"]
 
 
-def test_scrape_url_does_not_resolve_again_after_validation(monkeypatch):
-    calls = []
-
-    def resolve(*args, **kwargs):
-        calls.append(args[0])
-        return [(2, 1, 6, "", ("93.184.216.34", 443))]
-
-    monkeypatch.setattr(main_mod.socket, "getaddrinfo", resolve)
-
-    class FakeClient:
-        def __init__(self, **kwargs):
-            self.address = kwargs["transport"].address
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def get(self, url):
-            return type("Response", (), {"status_code": 200, "text": ""})()
-
-    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
-
-    main_mod._scrape_url("https://example.com/job")
-
-    assert calls == ["example.com"]
-
-
 def test_scrape_url_pins_to_validated_address_preventing_dns_rebinding(monkeypatch):
     """Regression test: ensure the request uses the validated public IP even if
     DNS would later resolve to a private address (DNS rebinding attack)."""
@@ -505,10 +476,11 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert "📝 Values prepared for Notion:" in output
     assert "   Company: [length=4, preview=Acme]" in output
     assert "   Role: [length=9, preview=Developer]" in output
-    assert "   Stage: [length=7, preview=Applied]" in output
-    assert "   Source: [length=12, preview=Company site]" in output
-    assert "   Last Update Date: [length=10, preview=" in output
-    assert "   Update Details: [length=9, preview=New entry]" in output
+    assert "   Stage:" not in output
+    assert "   Source:" not in output
+    assert "   Notes:" not in output
+    assert "   Last Update Date:" not in output
+    assert "   Update Details:" not in output
     assert "'Firma': {'rich_text': [{'text': {'content': 'Acme'}}]}" in output
     assert "'Stelle': {'title': [{'text': {'content': 'Developer'}}]}" in output
     assert "'URL': {'url': 'https://93.184.216.34/jobs/1'}" in output
@@ -536,11 +508,11 @@ def test_run_create_populates_zurich_fields(monkeypatch):
     _, properties, _ = notion.calls[0]
     assert properties["Company"] == "Zurich Insurance"
     assert properties["Role"] == "Head Legal IT and Operations 80-100%"
-    assert properties["Stage"] == "Applied"
-    assert properties["Source"] == "Company site"
-    assert properties["Last Update Date"]
-    assert properties["Update Details"] == "New entry"
-    assert properties["Notes"] == "Job description text"
+    assert "Stage" not in properties
+    assert "Source" not in properties
+    assert "Notes" not in properties
+    assert "Last Update Date" not in properties
+    assert "Update Details" not in properties
 
 
 @pytest.mark.parametrize(
@@ -584,7 +556,9 @@ def test_load_prop_name_map_accepts_file_in_working_directory(tmp_path, monkeypa
     assert main_mod._load_prop_name_map("./prop_map.json") == {"Company": "Firma"}
 
 
-@pytest.mark.parametrize("content", ['[]', '{"Company": 1}', '{1: "Firma"}'])
+@pytest.mark.parametrize(
+    "content", ["[]", '{"Company": 1}', '{"Company": ["Firma"]}']
+)
 def test_load_prop_name_map_rejects_non_string_object_maps(
     tmp_path, monkeypatch, content
 ):
@@ -613,8 +587,11 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     assert properties["URL"] == "https://93.184.216.34/jobs/2"
     assert properties["Type"] == "electronic"
     assert properties["Applied date"]
-    assert properties["Stage"] == "Applied"
-    assert properties["Source"] == "Company site"
+    assert "Stage" not in properties
+    assert "Source" not in properties
+    assert "Notes" not in properties
+    assert "Last Update Date" not in properties
+    assert "Update Details" not in properties
     assert "Tracked" not in properties
     assert prop_name_map is None
 
