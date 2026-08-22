@@ -29,6 +29,20 @@ class FakeWait:
         self.timeout = timeout
 
 
+def _client_for_response(response):
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            return response
+
+    return FakeClient()
+
+
 class FakeNotion:
     def __init__(self, df=None):
         self.df = df if df is not None else pd.DataFrame()
@@ -120,8 +134,18 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
             "<h1>Senior Engineer</h1></html>"
         )
 
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            return Response()
+
     monkeypatch.setattr(
-        main_mod.httpx, "get", lambda url, timeout, follow_redirects: Response()
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
     )
 
     result = main_mod._scrape_url("https://93.184.216.34/jobs/1")
@@ -144,7 +168,7 @@ def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
         )
 
     monkeypatch.setattr(
-        main_mod.httpx, "get", lambda url, timeout, follow_redirects: Response()
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
     )
     monkeypatch.setattr(
         main_mod,
@@ -159,12 +183,36 @@ def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
     assert result["h1"] == "Platform Engineer"
 
 
+def test_regex_page_text_excludes_noscript_content():
+    result = main_mod._scrape_with_regex(
+        "<html><body><noscript>secret</noscript><p>Visible job</p></body></html>",
+        {"url": "https://93.184.216.34/jobs/1"},
+    )
+
+    assert result["text"] == "Visible job"
+
+
+def test_scrape_url_allows_captcha_in_valid_description(monkeypatch):
+    class Response:
+        status_code = 200
+        text = "<html><title>Engineer</title><h1>Engineer</h1><p>CAPTCHA training.</p></html>"
+
+    monkeypatch.setattr(
+        main_mod.httpx,
+        "Client",
+        lambda **kwargs: _client_for_response(Response()),
+    )
+
+    assert "blocked" not in main_mod._scrape_url("https://93.184.216.34/jobs/1")
+
+
 def test_scrape_url_marks_access_blocked_pages(monkeypatch):
     class Response:
+        status_code = 403
         text = "<html><title>Blocked - Indeed.com</title><h1>Access Denied</h1></html>"
 
     monkeypatch.setattr(
-        main_mod.httpx, "get", lambda url, timeout, follow_redirects: Response()
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
     )
 
     result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked")
@@ -188,10 +236,20 @@ def test_run_create_does_not_create_page_for_blocked_scrape(monkeypatch, capsys)
 
 
 def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
-    def raise_error(url, timeout, follow_redirects):
-        raise RuntimeError("network unavailable")
+    class FakeClient:
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr(main_mod.httpx, "get", raise_error)
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            raise RuntimeError("network unavailable")
+
+    def raise_error(**kwargs):
+        return FakeClient()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", raise_error)
 
     assert main_mod._scrape_url("https://93.184.216.34/jobs/3") == {
         "url": "https://93.184.216.34/jobs/3"
@@ -212,7 +270,7 @@ def test_scrape_url_rejects_ssrf_targets(url, monkeypatch):
     def fail_if_called(*args, **kwargs):
         raise AssertionError("network request should not be made")
 
-    monkeypatch.setattr(main_mod.httpx, "get", fail_if_called)
+    monkeypatch.setattr(main_mod.httpx, "Client", fail_if_called)
 
     with pytest.raises(ValueError):
         main_mod._scrape_url(url)
@@ -224,32 +282,110 @@ def test_scrape_url_disables_redirects(monkeypatch):
     class Response:
         text = ""
 
-    def fake_get(url, **kwargs):
-        calls.append((url, kwargs))
-        return Response()
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
 
-    monkeypatch.setattr(main_mod.httpx, "get", fake_get)
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            calls.append(url)
+            return Response()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
 
     main_mod._scrape_url("https://93.184.216.34/jobs/4")
 
-    assert calls == [
-        (
-            "https://93.184.216.34/jobs/4",
-            {"timeout": 15, "follow_redirects": False},
-        )
-    ]
+    assert calls[1] == "https://93.184.216.34/jobs/4"
+    assert calls[0]["follow_redirects"] is False
+
+
+def test_scrape_url_uses_validated_dns_address(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        main_mod.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs["transport"].pool._network_backend.address)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            return type("Response", (), {"text": ""})()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
+
+    main_mod._scrape_url("https://example.com/job")
+
+    assert calls == ["93.184.216.34"]
+
+
+def test_scrape_url_does_not_resolve_again_after_validation(monkeypatch):
+    calls = []
+
+    def resolve(*args, **kwargs):
+        calls.append(args[0])
+        return [(2, 1, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(main_mod.socket, "getaddrinfo", resolve)
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.address = kwargs["transport"].pool._network_backend.address
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            return type("Response", (), {"status_code": 200, "text": ""})()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
+
+    main_mod._scrape_url("https://example.com/job")
+
+    assert calls == ["example.com"]
+
+
+def test_log_scraped_values_bounds_page_text(capsys):
+    text = "secret " * 100
+
+    main_mod._log_scraped_values("https://example.com/job", {"text": text})
+
+    output = capsys.readouterr().out
+    assert f"length={len(text)}" in output
+    assert text not in output
 
 
 def test_scrape_url_accepts_hostname_with_public_dns(monkeypatch):
     monkeypatch.setattr(
         main_mod.socket,
         "getaddrinfo",
-        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+        lambda *args, **kwargs: [
+            (10, 1, 6, "", ("2001:4860:4860::8888", 443, 0, 0))
+        ],
     )
     monkeypatch.setattr(
         main_mod.httpx,
-        "get",
-        lambda *args, **kwargs: type("Response", (), {"text": ""})(),
+        "Client",
+        lambda **kwargs: _client_for_response(
+            type("Response", (), {"status_code": 200, "text": ""})()
+        ),
     )
 
     assert main_mod._scrape_url("https://example.com/job")["url"] == (
@@ -280,7 +416,7 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
 
     output = capsys.readouterr().out
     assert "🔎 Scraped values from https://93.184.216.34/jobs/1:" in output
-    assert "   title: Scraped title" in output
+    assert "   title: [length=13, preview=Scraped title]" in output
     assert "📝 Values prepared for Notion:" in output
     assert "   Company: Acme" in output
     assert "   Role: Developer" in output
@@ -328,6 +464,9 @@ def test_run_create_populates_zurich_fields(monkeypatch):
         ("https://www.linkedin.com/jobs/view/123", "LinkedIn"),
         ("https://ch.indeed.com/viewjob?jk=123", "Indeed"),
         ("https://www.careers.zurich.com/job/123", "Company site"),
+        ("https://notlinkedin.com/jobs/123", "Company site"),
+        ("https://linkedin.com.example/jobs/123", "Company site"),
+        ("https://indeed.com.example/jobs/123", "Company site"),
     ],
 )
 def test_build_create_properties_sets_source_from_url(url, expected_source):

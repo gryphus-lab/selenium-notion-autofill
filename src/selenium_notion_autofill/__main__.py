@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpcore
 import httpx
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -350,7 +351,7 @@ def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
         result["h1"] = re.sub(r"<[^>]+>", "", m.group(1)).strip()
 
     page_text = re.sub(
-        r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>",
+        r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>|<noscript[^>]*>.*?</noscript>",
         "",
         text,
         flags=re.I | re.S,
@@ -363,11 +364,59 @@ def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
     return result
 
 
+class _PinnedNetworkBackend(httpcore.NetworkBackend):
+    def __init__(self, address: str):
+        self.address = address
+        self.backend = httpcore.SyncBackend()
+
+    def connect_tcp(
+        self,
+        host,
+        port,
+        timeout=None,
+        local_address=None,
+        socket_options=None,
+    ):
+        return self.backend.connect_tcp(
+            self.address, port, timeout, local_address, socket_options
+        )
+
+
+class _PinnedTransport(httpx.BaseTransport):
+    def __init__(self, address: str):
+        self.pool = httpcore.ConnectionPool(
+            network_backend=_PinnedNetworkBackend(address)
+        )
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        core_request = httpcore.Request(
+            request.method,
+            str(request.url),
+            headers=request.headers.raw,
+            content=request.content,
+        )
+        core_response = self.pool.handle_request(core_request)
+        return httpx.Response(
+            core_response.status,
+            headers=core_response.headers,
+            content=core_response.read(),
+            request=request,
+        )
+
+    def close(self) -> None:
+        self.pool.close()
+
+
 def _scrape_url(url: str) -> dict:
     """Scrape a URL to extract title, description and first h1."""
-    _validate_external_url(url)
+    address = _validate_external_url(url)
     try:
-        resp = httpx.get(url, timeout=15, follow_redirects=False)
+        with httpx.Client(
+            transport=_PinnedTransport(address),
+            timeout=15,
+            follow_redirects=False,
+        ) as client:
+            resp = client.get(url)
         text = resp.text or ""
     except Exception as exc:
         print(f"   ❌ Could not fetch URL {url}: {exc}")
@@ -379,15 +428,18 @@ def _scrape_url(url: str) -> dict:
     except Exception:
         result = _scrape_with_regex(text, result)
 
-    if any(
-        marker in text.lower()
+    blocked_fields = " ".join(
+        str(result.get(field, "")) for field in ("title", "h1")
+    ).lower()
+    if getattr(resp, "status_code", 200) in {401, 403, 429} or any(
+        marker in blocked_fields
         for marker in ("access denied", "captcha", "unusual traffic", "robot check")
     ):
         result["blocked"] = "The website returned an access-blocked page"
     return result
 
 
-def _validate_external_url(url: str) -> None:
+def _validate_external_url(url: str) -> str:
     """Reject URL targets that could be used to access local network services."""
     if not isinstance(url, str) or not url.strip():
         raise ValueError("URL must be a non-empty string")
@@ -402,27 +454,27 @@ def _validate_external_url(url: str) -> None:
     if hostname == "localhost" or hostname.endswith(".localhost"):
         raise ValueError("URL must not target localhost")
 
-    _validate_public_hostname(
+    return _validate_public_hostname(
         hostname,
         parsed.port or (443 if parsed.scheme == "https" else 80),
     )
 
 
-def _validate_public_hostname(hostname: str, port: int) -> None:
+def _validate_public_hostname(hostname: str, port: int) -> str:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
-        _validate_resolved_addresses(hostname, port)
-        return
+        return _validate_resolved_addresses(hostname, port)
 
     if not address.is_global:
         raise ValueError("URL must target a public IP address")
+    return str(address)
 
 
-def _validate_resolved_addresses(hostname: str, port: int) -> None:
+def _validate_resolved_addresses(hostname: str, port: int) -> str:
     try:
-        addresses = {
-            sockaddr[4][0]
+        addresses: set[str] = {
+            str(sockaddr[4][0])
             for sockaddr in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
         }
     except (OSError, ValueError) as exc:
@@ -431,13 +483,14 @@ def _validate_resolved_addresses(hostname: str, port: int) -> None:
         not ipaddress.ip_address(address).is_global for address in addresses
     ):
         raise ValueError("URL must resolve only to public IP addresses")
+    return min(addresses)
 
 
 def _source_from_url(url: str) -> str:
-    url_lower = url.lower()
-    if "linkedin.com" in url_lower:
+    hostname = (urlparse(url).hostname or "").rstrip(".").lower()
+    if hostname == "linkedin.com" or hostname.endswith(".linkedin.com"):
         return "LinkedIn"
-    if "indeed.com" in url_lower:
+    if hostname == "indeed.com" or hostname.endswith(".indeed.com"):
         return "Indeed"
     return "Company site"
 
@@ -487,7 +540,14 @@ def _build_dry_run_payload(
 def _log_scraped_values(url: str, scraped: dict) -> None:
     print(f"🔎 Scraped values from {url}:")
     for key, value in scraped.items():
+        if isinstance(value, str):
+            value = f"[length={len(value)}, preview={_scraped_text_preview(value)}]"
         print(f"   {key}: {value}")
+
+
+def _scraped_text_preview(value: str, limit: int = 200) -> str:
+    preview = re.sub(r"\s+", " ", value).strip()[:limit]
+    return f"{preview}..." if len(value) > limit else preview
 
 
 def _log_prepared_properties(properties: dict[str, object]) -> None:
@@ -532,7 +592,11 @@ def _run_create(
     hostname = parsed.hostname or parsed.netloc or url
 
     title = role_override or scraped.get("h1") or scraped.get("title") or hostname
-    if not company_override and hostname.endswith(".careers.zurich.com"):
+    hostname_lower = hostname.rstrip(".").lower()
+    if not company_override and (
+        hostname_lower == "careers.zurich.com"
+        or hostname_lower.endswith(".careers.zurich.com")
+    ):
         hostname = "Zurich Insurance"
     else:
         hostname = company_override or hostname
