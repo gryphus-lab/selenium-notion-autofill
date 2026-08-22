@@ -45,6 +45,9 @@ from selenium_notion_autofill.utils.selenium_helper import (
     update_rejected_records,
 )
 
+LAST_UPDATE_DATE = "Last Update Date"
+UPDATE_DETAILS = "Update Details"
+
 
 def extract_formatted_field(val):
     """Extract formatted field value from string representation.
@@ -295,6 +298,14 @@ def _meta_content(soup, attrs: dict[str, str]) -> str | None:
 
 def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, str]:
     soup = BeautifulSoup(text, "html.parser")
+    for element in soup(["script", "style", "noscript"]):
+        element.decompose()
+
+    content = soup.find("main") or soup.find("article") or soup.body or soup
+    page_text = content.get_text("\n", strip=True)
+    if page_text:
+        result["text"] = re.sub(r"\n{2,}", "\n", page_text)
+
     if soup.title and isinstance(soup.title.string, str):
         result["title"] = soup.title.string.strip()
 
@@ -337,6 +348,17 @@ def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
     m = re.search(r"<h1[^>]*>(.*?)</h1>", text, re.IGNORECASE | re.DOTALL)
     if m:
         result["h1"] = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+
+    page_text = re.sub(
+        r"<script[^>]*>.*?</script>|<style[^>]*>.*?</style>",
+        "",
+        text,
+        flags=re.I | re.S,
+    )
+    page_text = re.sub(r"<[^>]+>", " ", page_text)
+    page_text = re.sub(r"\s+", " ", page_text).strip()
+    if page_text:
+        result["text"] = page_text
 
     return result
 
@@ -411,6 +433,15 @@ def _validate_resolved_addresses(hostname: str, port: int) -> None:
         raise ValueError("URL must resolve only to public IP addresses")
 
 
+def _source_from_url(url: str) -> str:
+    url_lower = url.lower()
+    if "linkedin.com" in url_lower:
+        return "LinkedIn"
+    if "indeed.com" in url_lower:
+        return "Indeed"
+    return "Company site"
+
+
 def _build_create_properties(
     url: str,
     scraped: dict,
@@ -426,6 +457,11 @@ def _build_create_properties(
         "Type": "electronic",
         APPLIED_DATE: today_iso,
         "Tracked": False,
+        "Stage": "Applied",
+        "Source": _source_from_url(url),
+        "Notes": scraped.get("text") or "",
+        LAST_UPDATE_DATE: today_iso,
+        UPDATE_DETAILS: "New entry",
     }
     properties: dict[str, object] = {
         field_name: values[field_name]
@@ -434,6 +470,11 @@ def _build_create_properties(
     }
     properties[APPLIED_DATE] = values[APPLIED_DATE]
     properties["Description"] = scraped.get("description") or ""
+    properties["Stage"] = values["Stage"]
+    properties["Source"] = values["Source"]
+    properties["Notes"] = values["Notes"][:2000]
+    properties[LAST_UPDATE_DATE] = values[LAST_UPDATE_DATE]
+    properties[UPDATE_DETAILS] = values[UPDATE_DETAILS]
     return properties
 
 
@@ -441,6 +482,29 @@ def _build_dry_run_payload(
     properties: dict[str, object], final_map: dict[str, str] | None
 ) -> dict:
     return build_notion_properties(properties, final_map)
+
+
+def _log_scraped_values(url: str, scraped: dict) -> None:
+    print(f"🔎 Scraped values from {url}:")
+    for key, value in scraped.items():
+        print(f"   {key}: {value}")
+
+
+def _log_prepared_properties(properties: dict[str, object]) -> None:
+    print("📝 Values prepared for Notion:")
+    for key, value in properties.items():
+        print(f"   {key}: {value}")
+
+
+def _resolve_property_map(prop_name_map: dict | None) -> dict | None:
+    selected_map = prop_name_map if prop_name_map else NOTION_PROPERTY_MAP
+    return selected_map if selected_map and isinstance(selected_map, dict) else None
+
+
+def _create_notion_page(notion, properties: dict[str, object], final_map: dict | None):
+    if final_map:
+        return notion.create_page(DATABASE_ID, properties, prop_name_map=final_map)
+    return notion.create_page(DATABASE_ID, properties)
 
 
 def _run_create(
@@ -459,9 +523,7 @@ def _run_create(
     """
     scraped = _scrape_url(url)
 
-    print(f"🔎 Scraped values from {url}:")
-    for key, value in scraped.items():
-        print(f"   {key}: {value}")
+    _log_scraped_values(url, scraped)
     if scraped.get("blocked"):
         print(f"❌ Notion entry was not created: {scraped['blocked']}")
         return
@@ -469,21 +531,20 @@ def _run_create(
     parsed = urlparse(url)
     hostname = parsed.hostname or parsed.netloc or url
 
-    title = role_override or scraped.get("title") or scraped.get("h1") or hostname
-    hostname = company_override or hostname
+    title = role_override or scraped.get("h1") or scraped.get("title") or hostname
+    if not company_override and hostname.endswith(".careers.zurich.com"):
+        hostname = "Zurich Insurance"
+    else:
+        hostname = company_override or hostname
     properties = _build_create_properties(url, scraped, hostname, title)
     if "Description" not in FIELD_SELECTORS and "Description" not in (
         prop_name_map or {}
     ):
         properties.pop("Description")
 
-    print("📝 Values prepared for Notion:")
-    for key, value in properties.items():
-        print(f"   {key}: {value}")
+    _log_prepared_properties(properties)
 
-    # Merge user-provided mapping if present; if not, use env config mapping if any.
-    final_map = prop_name_map if prop_name_map else NOTION_PROPERTY_MAP
-    final_map = final_map if (final_map and isinstance(final_map, dict)) else None
+    final_map = _resolve_property_map(prop_name_map)
 
     if dry_run:
         notion_payload = _build_dry_run_payload(properties, final_map)
@@ -492,10 +553,7 @@ def _run_create(
         print("--- End payload ---")
         return
 
-    if final_map:
-        page_id = notion.create_page(DATABASE_ID, properties, prop_name_map=final_map)
-    else:
-        page_id = notion.create_page(DATABASE_ID, properties)
+    page_id = _create_notion_page(notion, properties, final_map)
 
     if page_id:
         print(f"✅ Created Notion entry for {url} -> {page_id}")

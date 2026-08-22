@@ -33,9 +33,19 @@ def _build_notion_property(key: str, val: Any) -> Dict[str, Any]:
     canonical = key.lower()
     if canonical == "role":
         return {"title": [_text_property(val)]}
-    if canonical in ("date", "applied_date", "applied date"):
+    if canonical in (
+        "date",
+        "applied_date",
+        "applied date",
+        "last_update_date",
+        "last update date",
+    ):
         return {"date": {"start": str(val)}}
     if canonical == "type":
+        return {"select": {"name": str(val)}}
+    if canonical == "stage":
+        return {"status": {"name": str(val)}}
+    if canonical == "source":
         return {"select": {"name": str(val)}}
     if canonical == "company":
         return {"rich_text": [_text_property(val)]}

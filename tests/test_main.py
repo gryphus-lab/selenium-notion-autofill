@@ -131,6 +131,7 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
         "title": "Engineer",
         "description": "Build systems",
         "h1": "Senior Engineer",
+        "text": "Engineer\nSenior Engineer",
     }
 
 
@@ -283,10 +284,61 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert "📝 Values prepared for Notion:" in output
     assert "   Company: Acme" in output
     assert "   Role: Developer" in output
+    assert "   Stage: Applied" in output
+    assert "   Source: Company site" in output
+    assert "   Last Update Date: " in output
+    assert "   Update Details: New entry" in output
     assert "'Firma': {'rich_text': [{'text': {'content': 'Acme'}}]}" in output
     assert "'Stelle': {'title': [{'text': {'content': 'Developer'}}]}" in output
     assert "'URL': {'url': 'https://93.184.216.34/jobs/1'}" in output
     assert notion.calls == []
+
+
+def test_run_create_populates_zurich_fields(monkeypatch):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {
+            "url": url,
+            "title": "Verbose page title",
+            "h1": "Head Legal IT and Operations 80-100%",
+            "text": "Job description text",
+        },
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(
+        notion,
+        "https://www.careers.zurich.com/job/1369843657",
+    )
+
+    _, properties, _ = notion.calls[0]
+    assert properties["Company"] == "Zurich Insurance"
+    assert properties["Role"] == "Head Legal IT and Operations 80-100%"
+    assert properties["Stage"] == "Applied"
+    assert properties["Source"] == "Company site"
+    assert properties["Last Update Date"]
+    assert properties["Update Details"] == "New entry"
+    assert properties["Notes"] == "Job description text"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_source"),
+    [
+        ("https://www.linkedin.com/jobs/view/123", "LinkedIn"),
+        ("https://ch.indeed.com/viewjob?jk=123", "Indeed"),
+        ("https://www.careers.zurich.com/job/123", "Company site"),
+    ],
+)
+def test_build_create_properties_sets_source_from_url(url, expected_source):
+    properties = main_mod._build_create_properties(
+        url,
+        {"text": "Job description"},
+        "Example Company",
+        "Engineer",
+    )
+
+    assert properties["Source"] == expected_source
 
 
 def test_load_prop_name_map_rejects_path_outside_working_directory(
@@ -325,6 +377,8 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     assert properties["URL"] == "https://93.184.216.34/jobs/2"
     assert properties["Type"] == "electronic"
     assert properties["Applied date"]
+    assert properties["Stage"] == "Applied"
+    assert properties["Source"] == "Company site"
     assert "Tracked" not in properties
     assert prop_name_map is None
 

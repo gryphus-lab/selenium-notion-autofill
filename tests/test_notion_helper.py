@@ -25,12 +25,18 @@ def test_notion_helper_initialization(notion_helper):
 
 def test_build_notion_properties_maps_dates_and_type():
     properties = build_notion_properties(
-        {"Date": "2024-01-15", "Applied date": "2024-01-16", "Type": "electronic"}
+        {
+            "Date": "2024-01-15",
+            "Applied date": "2024-01-16",
+            "Last Update Date": "2024-01-17",
+            "Type": "electronic",
+        }
     )
 
     assert properties == {
         "Date": {"date": {"start": "2024-01-15"}},
         "Applied date": {"date": {"start": "2024-01-16"}},
+        "Last Update Date": {"date": {"start": "2024-01-17"}},
         "Type": {"select": {"name": "electronic"}},
     }
 
@@ -45,6 +51,8 @@ def test_build_notion_properties_maps_dates_and_type():
         ("Tracked", True, {"checkbox": True}),
         ("Count", 3, {"number": 3}),
         ("Role", "Engineer", {"title": [{"text": {"content": "Engineer"}}]}),
+        ("Stage", "Applied", {"status": {"name": "Applied"}}),
+        ("Source", "Company site", {"select": {"name": "Company site"}}),
     ],
 )
 def test_build_notion_properties_maps_scalar_types(key, value, expected):
