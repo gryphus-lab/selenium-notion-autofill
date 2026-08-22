@@ -30,22 +30,18 @@ def _actual_property_name(key: str, prop_name_map: Optional[Mapping[str, str]]) 
 
 
 def _build_notion_property(key: str, val: Any) -> Dict[str, Any]:
-    canonical = key.lower()
+    canonical = key.lower().replace("_", " ")
     if canonical == "role":
         return {"title": [_text_property(val)]}
     if canonical in (
         "date",
-        "applied_date",
         "applied date",
-        "last_update_date",
         "last update date",
     ):
         return {"date": {"start": str(val)}}
-    if canonical == "type":
-        return {"select": {"name": str(val)}}
     if canonical == "stage":
         return {"status": {"name": str(val)}}
-    if canonical == "source":
+    if canonical in {"source", "type"}:
         return {"select": {"name": str(val)}}
     if canonical == "company":
         return {"rich_text": [_text_property(val)]}
@@ -53,7 +49,7 @@ def _build_notion_property(key: str, val: Any) -> Dict[str, Any]:
         return {"url": str(val)}
     if canonical == "email":
         return {"email": str(val)}
-    if canonical in ("phone", "phone_number"):
+    if canonical in {"phone", "phone number"}:
         return {"phone_number": str(val)}
     if isinstance(val, bool):
         return {"checkbox": val}

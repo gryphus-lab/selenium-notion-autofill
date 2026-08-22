@@ -134,16 +134,6 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
             "<h1>Senior Engineer</h1></html>"
         )
 
-    class FakeClient:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def get(self, url):
-            return Response()
-
     monkeypatch.setattr(
         main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
     )
@@ -195,7 +185,10 @@ def test_regex_page_text_excludes_noscript_content():
 def test_scrape_url_allows_captcha_in_valid_description(monkeypatch):
     class Response:
         status_code = 200
-        text = "<html><title>Engineer</title><h1>Engineer</h1><p>CAPTCHA training.</p></html>"
+        text = (
+            "<html><title>Engineer</title><h1>Engineer</h1>"
+            "<p>CAPTCHA training.</p></html>"
+        )
 
     monkeypatch.setattr(
         main_mod.httpx,
@@ -204,6 +197,25 @@ def test_scrape_url_allows_captcha_in_valid_description(monkeypatch):
     )
 
     assert "blocked" not in main_mod._scrape_url("https://93.184.216.34/jobs/1")
+
+
+def test_scrape_url_marks_blocking_body_text(monkeypatch):
+    class Response:
+        status_code = 200
+        text = (
+            "<html><title>Engineer</title><h1>Engineer</h1>"
+            "<body>Access Denied</body></html>"
+        )
+
+    monkeypatch.setattr(
+        main_mod.httpx,
+        "Client",
+        lambda **kwargs: _client_for_response(Response()),
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked-body")
+
+    assert result["blocked"] == "The website returned an access-blocked page"
 
 
 def test_scrape_url_marks_access_blocked_pages(monkeypatch):
@@ -329,6 +341,7 @@ def test_scrape_url_disables_redirects(monkeypatch):
 
     assert calls[1] == "https://93.184.216.34/jobs/4"
     assert calls[0]["follow_redirects"] is False
+    assert calls[0]["trust_env"] is False
 
 
 def test_scrape_url_uses_validated_dns_address(monkeypatch):
@@ -342,7 +355,7 @@ def test_scrape_url_uses_validated_dns_address(monkeypatch):
 
     class FakeClient:
         def __init__(self, **kwargs):
-            calls.append(kwargs["transport"].pool._network_backend.address)
+            calls.append(kwargs["transport"].address)
 
         def __enter__(self):
             return self
@@ -371,7 +384,7 @@ def test_scrape_url_does_not_resolve_again_after_validation(monkeypatch):
 
     class FakeClient:
         def __init__(self, **kwargs):
-            self.address = kwargs["transport"].pool._network_backend.address
+            self.address = kwargs["transport"].address
 
         def __enter__(self):
             return self
@@ -404,14 +417,16 @@ def test_scrape_url_pins_to_validated_address_preventing_dns_rebinding(monkeypat
             # Hypothetical second call (should not happen): return private IP
             return [(2, 1, 6, "", ("127.0.0.1", 443))]
 
-    monkeypatch.setattr(main_mod.socket, "getaddrinfo", resolve_once_public_then_private)
+    monkeypatch.setattr(
+        main_mod.socket, "getaddrinfo", resolve_once_public_then_private
+    )
 
     connected_address = None
 
     class FakeClient:
         def __init__(self, **kwargs):
             nonlocal connected_address
-            connected_address = kwargs["transport"].pool._network_backend.address
+            connected_address = kwargs["transport"].address
 
         def __enter__(self):
             return self
@@ -488,12 +503,12 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert "🔎 Scraped values from https://93.184.216.34/jobs/1:" in output
     assert "   title: [length=13, preview=Scraped title]" in output
     assert "📝 Values prepared for Notion:" in output
-    assert "   Company: Acme" in output
-    assert "   Role: Developer" in output
-    assert "   Stage: Applied" in output
-    assert "   Source: Company site" in output
-    assert "   Last Update Date: " in output
-    assert "   Update Details: New entry" in output
+    assert "   Company: [length=4, preview=Acme]" in output
+    assert "   Role: [length=9, preview=Developer]" in output
+    assert "   Stage: [length=7, preview=Applied]" in output
+    assert "   Source: [length=12, preview=Company site]" in output
+    assert "   Last Update Date: [length=10, preview=" in output
+    assert "   Update Details: [length=9, preview=New entry]" in output
     assert "'Firma': {'rich_text': [{'text': {'content': 'Acme'}}]}" in output
     assert "'Stelle': {'title': [{'text': {'content': 'Developer'}}]}" in output
     assert "'URL': {'url': 'https://93.184.216.34/jobs/1'}" in output
@@ -567,6 +582,18 @@ def test_load_prop_name_map_accepts_file_in_working_directory(tmp_path, monkeypa
     prop_map_path.write_text('{"Company": "Firma"}', encoding="utf-8")
 
     assert main_mod._load_prop_name_map("./prop_map.json") == {"Company": "Firma"}
+
+
+@pytest.mark.parametrize("content", ['[]', '{"Company": 1}', '{1: "Firma"}'])
+def test_load_prop_name_map_rejects_non_string_object_maps(
+    tmp_path, monkeypatch, content
+):
+    monkeypatch.chdir(tmp_path)
+    prop_map_path = tmp_path / "prop_map.json"
+    prop_map_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main_mod._load_prop_name_map("./prop_map.json")
 
 
 def test_run_create_calls_notion_with_default_mapping(monkeypatch):

@@ -48,6 +48,11 @@ from selenium_notion_autofill.utils.selenium_helper import (
 
 LAST_UPDATE_DATE = "Last Update Date"
 UPDATE_DETAILS = "Update Details"
+MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
+
+
+class _DocumentTooLargeError(RuntimeError):
+    """Raised when a scraped response exceeds the document size limit."""
 
 
 def extract_formatted_field(val):
@@ -217,7 +222,13 @@ def _load_prop_name_map(prop_map: str | None) -> dict[str, str] | None:
             raise ValueError("path must be inside the current working directory")
 
         with prop_map_path.open("r", encoding="utf-8") as fh:
-            return json.load(fh)
+            parsed_map = json.load(fh)
+        if not isinstance(parsed_map, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in parsed_map.items()
+        ):
+            raise ValueError("must be a JSON object with string keys and values")
+        return parsed_map
     except Exception as exc:
         print(f"Could not load prop-map file {prop_map}: {exc}")
         sys.exit(1)
@@ -382,8 +393,28 @@ class _PinnedNetworkBackend(httpcore.NetworkBackend):
         )
 
 
+class _LimitedResponseStream(httpx.SyncByteStream):
+    def __init__(self, core_response: httpcore.Response):
+        self.core_response = core_response
+        self.bytes_read = 0
+
+    def __iter__(self):
+        try:
+            for chunk in self.core_response.iter_stream():
+                self.bytes_read += len(chunk)
+                if self.bytes_read > MAX_DOCUMENT_BYTES:
+                    raise _DocumentTooLargeError("response exceeds document size limit")
+                yield chunk
+        finally:
+            self.core_response.close()
+
+    def close(self) -> None:
+        self.core_response.close()
+
+
 class _PinnedTransport(httpx.BaseTransport):
     def __init__(self, address: str):
+        self.address = address
         self.pool = httpcore.ConnectionPool(
             network_backend=_PinnedNetworkBackend(address)
         )
@@ -394,14 +425,21 @@ class _PinnedTransport(httpx.BaseTransport):
             str(request.url),
             headers=request.headers.raw,
             content=request.content,
+            extensions=request.extensions,
         )
         core_response = self.pool.handle_request(core_request)
-        return httpx.Response(
-            core_response.status,
-            headers=core_response.headers,
-            content=core_response.read(),
-            request=request,
-        )
+        response_stream = _LimitedResponseStream(core_response)
+        try:
+            return httpx.Response(
+                core_response.status,
+                headers=core_response.headers,
+                stream=response_stream,
+                extensions=core_response.extensions,
+                request=request,
+            )
+        except Exception:
+            response_stream.close()
+            raise
 
     def close(self) -> None:
         self.pool.close()
@@ -415,6 +453,7 @@ def _scrape_url(url: str) -> dict:
             transport=_PinnedTransport(address),
             timeout=15,
             follow_redirects=False,
+            trust_env=False,
         ) as client:
             resp = client.get(url)
         text = resp.text or ""
@@ -429,15 +468,19 @@ def _scrape_url(url: str) -> dict:
         result = _scrape_with_regex(text, result)
 
     status_code = getattr(resp, "status_code", 200)
-    if status_code in {403, 429}:
+    if status_code in {401, 403, 429}:
         result["blocked"] = "The website returned an access-blocked page"
     else:
-        blocked_fields = " ".join(
+        heading_fields = " ".join(
             str(result.get(field, "")) for field in ("title", "h1")
         ).lower()
-        if status_code == 401 or any(
-            marker in blocked_fields
+        text_fields = str(result.get("text", ""))[:500].lower()
+        if any(
+            marker in heading_fields
             for marker in ("access denied", "captcha", "unusual traffic", "robot check")
+        ) or any(
+            marker in text_fields
+            for marker in ("access denied", "unusual traffic", "robot check")
         ):
             result["blocked"] = "The website returned an access-blocked page"
     return result
@@ -516,22 +559,25 @@ def _build_create_properties(
         "Tracked": False,
         "Stage": "Applied",
         "Source": _source_from_url(url),
-        "Notes": scraped.get("text") or "",
+        "Notes": (scraped.get("text") or "")[:2000],
         LAST_UPDATE_DATE: today_iso,
         UPDATE_DETAILS: "New entry",
+        "Description": scraped.get("description") or "",
     }
     properties: dict[str, object] = {
         field_name: values[field_name]
-        for field_name in FIELD_SELECTORS
+        for field_name in (
+            *FIELD_SELECTORS,
+            APPLIED_DATE,
+            "Stage",
+            "Source",
+            "Notes",
+            LAST_UPDATE_DATE,
+            UPDATE_DETAILS,
+            "Description",
+        )
         if field_name in values
     }
-    properties[APPLIED_DATE] = values[APPLIED_DATE]
-    properties["Description"] = scraped.get("description") or ""
-    properties["Stage"] = values["Stage"]
-    properties["Source"] = values["Source"]
-    properties["Notes"] = values["Notes"][:2000]
-    properties[LAST_UPDATE_DATE] = values[LAST_UPDATE_DATE]
-    properties[UPDATE_DETAILS] = values[UPDATE_DETAILS]
     return properties
 
 
@@ -542,7 +588,7 @@ def _build_dry_run_payload(
 
 
 def _log_scraped_values(url: str, scraped: dict) -> None:
-    print(f"🔎 Scraped values from {url}:")
+    print(f"🔎 Scraped values from {_escape_terminal_controls(url)}:")
     for key, value in scraped.items():
         if isinstance(value, str):
             value = f"[length={len(value)}, preview={_scraped_text_preview(value)}]"
@@ -550,13 +596,24 @@ def _log_scraped_values(url: str, scraped: dict) -> None:
 
 
 def _scraped_text_preview(value: str, limit: int = 200) -> str:
-    preview = re.sub(r"\s+", " ", value).strip()[:limit]
-    return f"{preview}..." if len(value) > limit else preview
+    normalized = re.sub(r"\s+", " ", value).strip()
+    preview = _escape_terminal_controls(normalized[:limit])
+    return f"{preview}..." if len(normalized) > limit else preview
+
+
+def _escape_terminal_controls(value: str) -> str:
+    return re.sub(
+        r"[\x00-\x1f\x7f-\x9f]",
+        lambda match: f"\\x{ord(match.group()):02x}",
+        value,
+    )
 
 
 def _log_prepared_properties(properties: dict[str, object]) -> None:
     print("📝 Values prepared for Notion:")
     for key, value in properties.items():
+        if isinstance(value, str):
+            value = f"[length={len(value)}, preview={_scraped_text_preview(value)}]"
         print(f"   {key}: {value}")
 
 
@@ -592,6 +649,8 @@ def _run_create(
         print(f"❌ Notion entry was not created: {scraped['blocked']}")
         return
 
+    final_map = _resolve_property_map(prop_name_map)
+
     parsed = urlparse(url)
     hostname = parsed.hostname or parsed.netloc or url
 
@@ -605,14 +664,10 @@ def _run_create(
     else:
         hostname = company_override or hostname
     properties = _build_create_properties(url, scraped, hostname, title)
-    if "Description" not in FIELD_SELECTORS and "Description" not in (
-        prop_name_map or {}
-    ):
+    if "Description" not in FIELD_SELECTORS and "Description" not in (final_map or {}):
         properties.pop("Description")
 
     _log_prepared_properties(properties)
-
-    final_map = _resolve_property_map(prop_name_map)
 
     if dry_run:
         notion_payload = _build_dry_run_payload(properties, final_map)
@@ -627,6 +682,7 @@ def _run_create(
         print(f"✅ Created Notion entry for {url} -> {page_id}")
     else:
         print(f"❌ Failed to create Notion entry for {url}")
+        sys.exit(1)
 
 
 def _filter_rejected_records(df: pd.DataFrame) -> pd.DataFrame:
