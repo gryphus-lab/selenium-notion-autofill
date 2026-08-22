@@ -158,6 +158,34 @@ def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
     assert result["h1"] == "Platform Engineer"
 
 
+def test_scrape_url_marks_access_blocked_pages(monkeypatch):
+    class Response:
+        text = "<html><title>Blocked - Indeed.com</title><h1>Access Denied</h1></html>"
+
+    monkeypatch.setattr(
+        main_mod.httpx, "get", lambda url, timeout, follow_redirects: Response()
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked")
+
+    assert result["blocked"] == "The website returned an access-blocked page"
+
+
+def test_run_create_does_not_create_page_for_blocked_scrape(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {"url": url, "title": "Access Denied", "blocked": "blocked"},
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(notion, "https://93.184.216.34/jobs/blocked")
+
+    output = capsys.readouterr().out
+    assert "Notion entry was not created: blocked" in output
+    assert notion.calls == []
+
+
 def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
     def raise_error(url, timeout, follow_redirects):
         raise RuntimeError("network unavailable")
@@ -250,6 +278,11 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     )
 
     output = capsys.readouterr().out
+    assert "🔎 Scraped values from https://93.184.216.34/jobs/1:" in output
+    assert "   title: Scraped title" in output
+    assert "📝 Values prepared for Notion:" in output
+    assert "   Company: Acme" in output
+    assert "   Role: Developer" in output
     assert "'Firma': {'rich_text': [{'text': {'content': 'Acme'}}]}" in output
     assert "'Stelle': {'title': [{'text': {'content': 'Developer'}}]}" in output
     assert "'URL': {'url': 'https://93.184.216.34/jobs/1'}" in output
@@ -291,6 +324,7 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     assert properties["Role"] == "Data Engineer"
     assert properties["URL"] == "https://93.184.216.34/jobs/2"
     assert properties["Type"] == "electronic"
+    assert properties["Applied date"]
     assert "Tracked" not in properties
     assert prop_name_map is None
 

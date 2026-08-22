@@ -353,9 +353,16 @@ def _scrape_url(url: str) -> dict:
 
     result = {"url": url}
     try:
-        return _scrape_with_beautifulsoup(text, result)
+        result = _scrape_with_beautifulsoup(text, result)
     except Exception:
-        return _scrape_with_regex(text, result)
+        result = _scrape_with_regex(text, result)
+
+    if any(
+        marker in text.lower()
+        for marker in ("access denied", "captcha", "unusual traffic", "robot check")
+    ):
+        result["blocked"] = "The website returned an access-blocked page"
+    return result
 
 
 def _validate_external_url(url: str) -> None:
@@ -425,6 +432,7 @@ def _build_create_properties(
         for field_name in FIELD_SELECTORS
         if field_name in values
     }
+    properties[APPLIED_DATE] = values[APPLIED_DATE]
     properties["Description"] = scraped.get("description") or ""
     return properties
 
@@ -451,6 +459,13 @@ def _run_create(
     """
     scraped = _scrape_url(url)
 
+    print(f"🔎 Scraped values from {url}:")
+    for key, value in scraped.items():
+        print(f"   {key}: {value}")
+    if scraped.get("blocked"):
+        print(f"❌ Notion entry was not created: {scraped['blocked']}")
+        return
+
     parsed = urlparse(url)
     hostname = parsed.hostname or parsed.netloc or url
 
@@ -461,6 +476,10 @@ def _run_create(
         prop_name_map or {}
     ):
         properties.pop("Description")
+
+    print("📝 Values prepared for Notion:")
+    for key, value in properties.items():
+        print(f"   {key}: {value}")
 
     # Merge user-provided mapping if present; if not, use env config mapping if any.
     final_map = prop_name_map if prop_name_map else NOTION_PROPERTY_MAP
