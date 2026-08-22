@@ -1,5 +1,6 @@
 """Configuration for Notion-Selenium Autofill."""
 
+import json
 import os
 
 from dotenv import load_dotenv
@@ -48,3 +49,15 @@ REJECTION_SELECTORS = {
 }
 
 ENTRY_SELECTOR = "alv-work-effort"
+
+# Optional: supply a JSON mapping (string) via env var NOTION_PROPERTY_MAP_JSON
+# mapping canonical keys (Company, Role, URL, Applied date, Description, Tracked)
+# to your database property names. Example:
+# NOTION_PROPERTY_MAP_JSON='{"Company": "Firma", "Role": "Stelle"}'
+NOTION_PROPERTY_MAP_JSON = os.environ.get("NOTION_PROPERTY_MAP_JSON", "")
+NOTION_PROPERTY_MAP = None
+if NOTION_PROPERTY_MAP_JSON:
+    try:
+        NOTION_PROPERTY_MAP = json.loads(NOTION_PROPERTY_MAP_JSON)
+    except Exception:
+        NOTION_PROPERTY_MAP = None

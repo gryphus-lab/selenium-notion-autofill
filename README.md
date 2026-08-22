@@ -72,6 +72,28 @@ selenium-notion-autofill/
 
 ## Usage
 
+### Create a Notion entry from a URL
+
+A new mise task `create` is available to create a Notion page from a URL by scraping basic metadata.
+
+Examples:
+
+```bash
+# Create and post to Notion
+mise run create 'https://example.com/job'
+
+# Dry-run: print the Notion payload without posting
+mise run create 'https://example.com/job' --dry-run
+
+# Use a JSON property map file to map canonical keys to your DB property names
+mise run create 'https://example.com/job' --prop-map=./prop_map.json
+
+# Override extracted company/role values
+mise run create 'https://example.com/job' --company='MyCo' --role='Engineer'
+```
+
+The `--prop-map` JSON file should map canonical keys (Company, Role, URL, Date, Type, Applied date, Description, Tracked) to the Notion database property names.
+
 ### Run with uv
 
 ```bash

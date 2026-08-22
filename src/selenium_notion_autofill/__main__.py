@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
 """Notion → Selenium Autofill Script - Main entry point."""
 
+import argparse
 import ast
+import ipaddress
+import json
+import re
 import shutil
+import socket
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import urlparse
 
+import httpx
 import pandas as pd
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -17,7 +26,9 @@ from selenium_notion_autofill.config import (
     APPLIED_DATE,
     DATABASE_ID,
     EXIT_MESSAGE,
+    FIELD_SELECTORS,
     NOTION_API_KEY,
+    NOTION_PROPERTY_MAP,
 )
 
 try:
@@ -27,6 +38,7 @@ except ImportError:  # pragma: no cover - optional dependency
     import shutil
 
 from selenium_notion_autofill.utils import NotionHelper
+from selenium_notion_autofill.utils.notion_helper import build_notion_properties
 from selenium_notion_autofill.utils.selenium_helper import (
     handle_login,
     process_records,
@@ -174,19 +186,71 @@ def _create_driver():
     return driver, wait
 
 
+CREATE_USAGE = (
+    "uv run -m selenium_notion_autofill create <url> [--dry-run] "
+    "[--prop-map=path] [--company=NAME] [--role=TITLE]"
+)
+
+
+def _create_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="uv run -m selenium_notion_autofill create")
+    parser.add_argument("url")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--prop-map")
+    parser.add_argument("--company", dest="company_override")
+    parser.add_argument("--role", dest="role_override")
+    return parser
+
+
+def _load_prop_name_map(prop_map: str | None) -> dict[str, str] | None:
+    if not prop_map:
+        return None
+
+    try:
+        base_dir = Path.cwd().resolve()
+        prop_map_path = Path(prop_map).resolve()
+        if not prop_map_path.is_relative_to(base_dir):
+            raise ValueError("path must be inside the current working directory")
+
+        with prop_map_path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        print(f"Could not load prop-map file {prop_map}: {exc}")
+        sys.exit(1)
+
+
+def _run_create_from_args(notion, args: list[str]) -> None:
+    if not args:
+        print(f"Usage: {CREATE_USAGE}")
+        sys.exit(1)
+
+    parsed_args = _create_arg_parser().parse_args(args)
+    _run_create(
+        notion,
+        parsed_args.url,
+        dry_run=parsed_args.dry_run,
+        prop_name_map=_load_prop_name_map(parsed_args.prop_map),
+        company_override=parsed_args.company_override,
+        role_override=parsed_args.role_override,
+    )
+
+
 def main():
     """Main entry point for the autofill script."""
     mode = sys.argv[1] if len(sys.argv) > 1 else "new"
 
     notion = NotionHelper(NOTION_API_KEY)
-
     if mode == "update-rejections":
         _run_update_rejections(notion)
     elif mode == "new":
         _run_new_entries(notion)
+    elif mode == "create":
+        _run_create_from_args(notion, sys.argv[2:])
     else:
         print(f"Unknown mode: {mode}")
-        print("Usage: uv run -m selenium_notion_autofill [new|update-rejections]")
+        print(
+            "Usage: uv run -m selenium_notion_autofill [new|update-rejections|create]"
+        )
         sys.exit(1)
 
 
@@ -213,7 +277,243 @@ def _run_new_entries(notion):
         process_records(driver, wait, df, notion)
     except Exception as exc:
         print(f"❌ Error: {exc}")
-        driver.save_screenshot("results/jobroom_main_error.png")
+        try:
+            driver.save_screenshot("results/jobroom_main_error.png")
+        except Exception as screenshot_exc:
+            print(f"   ⚠️ Could not save screenshot: {screenshot_exc}")
+        traceback.print_exc()
+    finally:
+        input("\nPress Enter to close browser...")
+        driver.quit()
+
+
+def _meta_content(soup, attrs: dict[str, str]) -> str | None:
+    meta = soup.find("meta", attrs=attrs)
+    value = meta.get("content") if meta else None
+    return value.strip() if isinstance(value, str) else None
+
+
+def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, str]:
+    soup = BeautifulSoup(text, "html.parser")
+    if soup.title and isinstance(soup.title.string, str):
+        result["title"] = soup.title.string.strip()
+
+    description = _meta_content(soup, {"name": "description"}) or _meta_content(
+        soup, {"property": "og:description"}
+    )
+    if description:
+        result["description"] = description
+
+    h1 = soup.find("h1")
+    if h1:
+        result["h1"] = h1.get_text(strip=True)
+    return result
+
+
+def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
+    m = re.search(r"<title>([^<]*+)</title>", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        result["title"] = m.group(1).strip()
+
+    for attribute, attribute_value in (
+        ("name", "description"),
+        ("property", "og:description"),
+    ):
+        tags = re.findall(r"<meta\b[^>]*>", text, re.IGNORECASE)
+        attribute_pattern = (
+            rf"\b{attribute}\s*=\s*[\"']{re.escape(attribute_value)}[\"']"
+        )
+        for tag in tags:
+            if re.search(attribute_pattern, tag, re.IGNORECASE):
+                content = re.search(
+                    r"\bcontent\s*=\s*[\"']([^\"']*)[\"']", tag, re.IGNORECASE
+                )
+                if content:
+                    result["description"] = content.group(1).strip()
+                    break
+        if "description" in result:
+            break
+
+    m = re.search(r"<h1[^>]*>(.*?)</h1>", text, re.IGNORECASE | re.DOTALL)
+    if m:
+        result["h1"] = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+
+    return result
+
+
+def _scrape_url(url: str) -> dict:
+    """Scrape a URL to extract title, description and first h1."""
+    _validate_external_url(url)
+    try:
+        resp = httpx.get(url, timeout=15, follow_redirects=False)
+        text = resp.text or ""
+    except Exception as exc:
+        print(f"   ❌ Could not fetch URL {url}: {exc}")
+        return {"url": url}
+
+    result = {"url": url}
+    try:
+        return _scrape_with_beautifulsoup(text, result)
+    except Exception:
+        return _scrape_with_regex(text, result)
+
+
+def _validate_external_url(url: str) -> None:
+    """Reject URL targets that could be used to access local network services."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("URL must be a non-empty string")
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL must use HTTP(S) and include a hostname")
+    if parsed.username or parsed.password:
+        raise ValueError("URL must not contain credentials")
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ValueError("URL must not target localhost")
+
+    _validate_public_hostname(
+        hostname,
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
+
+
+def _validate_public_hostname(hostname: str, port: int) -> None:
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        _validate_resolved_addresses(hostname, port)
+        return
+
+    if not address.is_global:
+        raise ValueError("URL must target a public IP address")
+
+
+def _validate_resolved_addresses(hostname: str, port: int) -> None:
+    try:
+        addresses = {
+            sockaddr[0]
+            for sockaddr in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError) as exc:
+        raise ValueError("URL hostname could not be resolved") from exc
+    if not addresses or any(
+        not ipaddress.ip_address(address).is_global for address in addresses
+    ):
+        raise ValueError("URL must resolve only to public IP addresses")
+
+
+def _build_create_properties(
+    url: str,
+    scraped: dict,
+    hostname: str,
+    title: str,
+) -> dict[str, object]:
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    values = {
+        "Company": hostname,
+        "Role": title,
+        "URL": url,
+        "Date": today_iso,
+        "Type": "electronic",
+        APPLIED_DATE: today_iso,
+        "Tracked": False,
+    }
+    properties: dict[str, object] = {
+        field_name: values[field_name]
+        for field_name in FIELD_SELECTORS
+        if field_name in values
+    }
+    properties["Description"] = scraped.get("description") or ""
+    return properties
+
+
+def _build_dry_run_payload(
+    properties: dict[str, object], final_map: dict[str, str] | None
+) -> dict:
+    return build_notion_properties(properties, final_map)
+
+
+def _run_create(
+    notion,
+    url: str,
+    dry_run: bool = False,
+    prop_name_map: dict | None = None,
+    company_override: str | None = None,
+    role_override: str | None = None,
+):
+    """Create a Notion page using the same property names the Selenium script expects.
+
+    The database field names must align with `FIELD_SELECTORS` keys, which are the
+    same names used by the rest of the automation. This keeps the new URL entry
+    feature consistent with the Job-Room autofill flow.
+    """
+    scraped = _scrape_url(url)
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname or parsed.netloc or url
+
+    title = role_override or scraped.get("title") or scraped.get("h1") or hostname
+    hostname = company_override or hostname
+    properties = _build_create_properties(url, scraped, hostname, title)
+    if "Description" not in FIELD_SELECTORS and "Description" not in (
+        prop_name_map or {}
+    ):
+        properties.pop("Description")
+
+    # Merge user-provided mapping if present; if not, use env config mapping if any.
+    final_map = prop_name_map if prop_name_map else NOTION_PROPERTY_MAP
+    final_map = final_map if (final_map and isinstance(final_map, dict)) else None
+
+    if dry_run:
+        notion_payload = _build_dry_run_payload(properties, final_map)
+        print("--- Dry run: Notion payload to create ---")
+        print(notion_payload)
+        print("--- End payload ---")
+        return
+
+    if final_map:
+        page_id = notion.create_page(DATABASE_ID, properties, prop_name_map=final_map)
+    else:
+        page_id = notion.create_page(DATABASE_ID, properties)
+
+    if page_id:
+        print(f"✅ Created Notion entry for {url} -> {page_id}")
+    else:
+        print(f"❌ Failed to create Notion entry for {url}")
+
+
+def _filter_rejected_records(df: pd.DataFrame) -> pd.DataFrame:
+    return df[
+        df["Update Details"].apply(
+            lambda value: pd.notna(value) and str(value).strip() != ""
+        )
+    ].reset_index(drop=True)
+
+
+def _print_rejected_records(df: pd.DataFrame) -> None:
+    print(f"✅ Found {len(df)} rejected records to update on Job-Room")
+    print("\nRecords to update:")
+    for _, row in df.iterrows():
+        company = row.get("Company", "N/A")
+        role = row.get("Role", "N/A")
+        update_date = row.get("Last Update Date", "N/A")
+        print(f"   • {company} - {role} (rejected: {update_date})")
+
+
+def _process_rejected_records(driver, wait, df, notion) -> None:
+    try:
+        print("\n🌐 Opening Job-Room...")
+        handle_login(driver)
+        print("\n🔄 Updating rejected entries...")
+        update_rejected_records(driver, wait, df, notion)
+    except Exception as exc:
+        print(f"❌ Error: {exc}")
+        try:
+            driver.save_screenshot("results/jobroom_update_main_error.png")
+        except Exception as screenshot_exc:
+            print(f"   ⚠️ Could not save screenshot: {screenshot_exc}")
         traceback.print_exc()
     finally:
         input("\nPress Enter to close browser...")
@@ -231,10 +531,7 @@ def _run_update_rejections(notion):
         print(EXIT_MESSAGE)
         return
 
-    # Filter to only those with Update Details (rejection reason)
-    df = df[
-        df["Update Details"].apply(lambda x: pd.notna(x) and str(x).strip() != "")
-    ].reset_index(drop=True)
+    df = _filter_rejected_records(df)
 
     if df.empty:
         print("\n     ⚠️ Rejected records found but none have Update Details.")
@@ -242,31 +539,10 @@ def _run_update_rejections(notion):
         print(EXIT_MESSAGE)
         return
 
-    print(f"✅ Found {len(df)} rejected records to update on Job-Room")
-    print("\nRecords to update:")
-    for _, row in df.iterrows():
-        company = row.get("Company", "N/A")
-        role = row.get("Role", "N/A")
-        update_date = row.get("Last Update Date", "N/A")
-        print(f"   • {company} - {role} (rejected: {update_date})")
+    _print_rejected_records(df)
 
     driver, wait = _create_driver()
-
-    try:
-        print("\n🌐 Opening Job-Room...")
-        handle_login(driver)
-        print("\n🔄 Updating rejected entries...")
-        update_rejected_records(driver, wait, df, notion)
-    except Exception as exc:
-        print(f"❌ Error: {exc}")
-        try:
-            driver.save_screenshot("results/jobroom_update_main_error.png")
-        except Exception as screenshot_exc:
-            print(f"   ⚠️ Could not save screenshot: {screenshot_exc}")
-        traceback.print_exc()
-    finally:
-        input("\nPress Enter to close browser...")
-        driver.quit()
+    _process_rejected_records(driver, wait, df, notion)
 
 
 if __name__ == "__main__":

@@ -47,6 +47,11 @@ alias = ["u"]
 description = "Add a new dependency"
 run = "uv add {args}"
 
+[tasks.create]
+description = "Create a new Notion entry from a URL"
+run = "uv run -m selenium_notion_autofill create"
+alias = ["c"]
+
 [tasks.update-deps]
 description = "Update dependencies"
 run = "uv sync --upgrade"
