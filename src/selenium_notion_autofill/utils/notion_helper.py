@@ -31,12 +31,14 @@ def _actual_property_name(key: str, prop_name_map: Optional[Mapping[str, str]]) 
 
 def _build_notion_property(key: str, val: Any) -> Dict[str, Any]:
     canonical = key.lower()
-    if canonical == "company":
+    if canonical == "role":
         return {"title": [_text_property(val)]}
     if canonical in ("date", "applied_date", "applied date"):
         return {"date": {"start": str(val)}}
     if canonical == "type":
         return {"select": {"name": str(val)}}
+    if canonical == "company":
+        return {"rich_text": [_text_property(val)]}
     if canonical in ("url", "website", "link"):
         return {"url": str(val)}
     if canonical == "email":

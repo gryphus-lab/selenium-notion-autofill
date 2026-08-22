@@ -393,7 +393,7 @@ def _validate_public_hostname(hostname: str, port: int) -> None:
 def _validate_resolved_addresses(hostname: str, port: int) -> None:
     try:
         addresses = {
-            sockaddr[0]
+            sockaddr[4][0]
             for sockaddr in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
         }
     except (OSError, ValueError) as exc:

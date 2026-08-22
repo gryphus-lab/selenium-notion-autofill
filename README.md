@@ -80,16 +80,16 @@ Examples:
 
 ```bash
 # Create and post to Notion
-mise run create 'https://example.com/job'
+mise create 'https://example.com/job'
 
 # Dry-run: print the Notion payload without posting
-mise run create 'https://example.com/job' --dry-run
+mise create 'https://example.com/job' --dry-run
 
 # Use a JSON property map file to map canonical keys to your DB property names
-mise run create 'https://example.com/job' --prop-map=./prop_map.json
+mise create 'https://example.com/job' --prop-map=./prop_map.json
 
 # Override extracted company/role values
-mise run create 'https://example.com/job' --company='MyCo' --role='Engineer'
+mise create 'https://example.com/job' --company='MyCo' --role='Engineer'
 ```
 
 The `--prop-map` JSON file should map canonical keys (Company, Role, URL, Date, Type, Applied date, Description, Tracked) to the Notion database property names.

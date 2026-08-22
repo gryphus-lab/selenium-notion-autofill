@@ -211,6 +211,23 @@ def test_scrape_url_disables_redirects(monkeypatch):
     ]
 
 
+def test_scrape_url_accepts_hostname_with_public_dns(monkeypatch):
+    monkeypatch.setattr(
+        main_mod.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    monkeypatch.setattr(
+        main_mod.httpx,
+        "get",
+        lambda *args, **kwargs: type("Response", (), {"text": ""})(),
+    )
+
+    assert main_mod._scrape_url("https://example.com/job")["url"] == (
+        "https://example.com/job"
+    )
+
+
 def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     monkeypatch.setattr(
         main_mod,
@@ -233,8 +250,8 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     )
 
     output = capsys.readouterr().out
-    assert "'Firma': {'title': [{'text': {'content': 'Acme'}}]}" in output
-    assert "'Stelle': {'rich_text': [{'text': {'content': 'Developer'}}]}" in output
+    assert "'Firma': {'rich_text': [{'text': {'content': 'Acme'}}]}" in output
+    assert "'Stelle': {'title': [{'text': {'content': 'Developer'}}]}" in output
     assert "'URL': {'url': 'https://93.184.216.34/jobs/1'}" in output
     assert notion.calls == []
 
