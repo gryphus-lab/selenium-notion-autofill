@@ -220,6 +220,33 @@ def test_scrape_url_marks_access_blocked_pages(monkeypatch):
     assert result["blocked"] == "The website returned an access-blocked page"
 
 
+def test_scrape_url_marks_403_and_429_blocked_regardless_of_content(monkeypatch):
+    """403 and 429 status codes should always be marked as blocked, even if
+    the response content doesn't contain blocking markers."""
+
+    # Test 403 with normal-looking content
+    class Response403:
+        status_code = 403
+        text = "<html><title>Job Opening</title><h1>Software Engineer</h1></html>"
+
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response403())
+    )
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/1")
+    assert result["blocked"] == "The website returned an access-blocked page"
+
+    # Test 429 with normal-looking content
+    class Response429:
+        status_code = 429
+        text = "<html><title>Job Opening</title><h1>Software Engineer</h1></html>"
+
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response429())
+    )
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/2")
+    assert result["blocked"] == "The website returned an access-blocked page"
+
+
 def test_run_create_does_not_create_page_for_blocked_scrape(monkeypatch, capsys):
     monkeypatch.setattr(
         main_mod,
@@ -360,6 +387,49 @@ def test_scrape_url_does_not_resolve_again_after_validation(monkeypatch):
     main_mod._scrape_url("https://example.com/job")
 
     assert calls == ["example.com"]
+
+
+def test_scrape_url_pins_to_validated_address_preventing_dns_rebinding(monkeypatch):
+    """Regression test: ensure the request uses the validated public IP even if
+    DNS would later resolve to a private address (DNS rebinding attack)."""
+    resolve_calls = []
+
+    def resolve_once_public_then_private(*args, **kwargs):
+        hostname = args[0]
+        resolve_calls.append(hostname)
+        if len(resolve_calls) == 1:
+            # First call during validation: return public IP
+            return [(2, 1, 6, "", ("93.184.216.34", 443))]
+        else:
+            # Hypothetical second call (should not happen): return private IP
+            return [(2, 1, 6, "", ("127.0.0.1", 443))]
+
+    monkeypatch.setattr(main_mod.socket, "getaddrinfo", resolve_once_public_then_private)
+
+    connected_address = None
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            nonlocal connected_address
+            connected_address = kwargs["transport"].pool._network_backend.address
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            return type("Response", (), {"status_code": 200, "text": ""})()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
+
+    main_mod._scrape_url("https://example.com/job")
+
+    # Verify DNS was only called once (during validation)
+    assert resolve_calls == ["example.com"]
+    # Verify the connection used the validated public IP, not any later resolution
+    assert connected_address == "93.184.216.34"
 
 
 def test_log_scraped_values_bounds_page_text(capsys):

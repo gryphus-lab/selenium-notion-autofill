@@ -428,14 +428,18 @@ def _scrape_url(url: str) -> dict:
     except Exception:
         result = _scrape_with_regex(text, result)
 
-    blocked_fields = " ".join(
-        str(result.get(field, "")) for field in ("title", "h1")
-    ).lower()
-    if getattr(resp, "status_code", 200) in {401, 403, 429} or any(
-        marker in blocked_fields
-        for marker in ("access denied", "captcha", "unusual traffic", "robot check")
-    ):
+    status_code = getattr(resp, "status_code", 200)
+    if status_code in {403, 429}:
         result["blocked"] = "The website returned an access-blocked page"
+    else:
+        blocked_fields = " ".join(
+            str(result.get(field, "")) for field in ("title", "h1")
+        ).lower()
+        if status_code == 401 or any(
+            marker in blocked_fields
+            for marker in ("access denied", "captcha", "unusual traffic", "robot check")
+        ):
+            result["blocked"] = "The website returned an access-blocked page"
     return result
 
 
