@@ -298,7 +298,8 @@ def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
     monkeypatch.setattr(main_mod.httpx, "Client", fake_client_for_network_error)
 
     assert main_mod._scrape_url("https://93.184.216.34/jobs/3") == {
-        "url": "https://93.184.216.34/jobs/3"
+        "url": "https://93.184.216.34/jobs/3",
+        "blocked": "The website returned an access-blocked page",
     }
 
 
@@ -747,7 +748,7 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     main_mod._run_create(notion, "https://93.184.216.34/jobs/2")
 
     database_id, properties, prop_name_map = notion.calls[0]
-    assert database_id == main_mod.DATABASE_ID
+    assert database_id == main_mod.get_database_id()
     assert properties["Company"] == "93.184.216.34"
     assert properties["Role"] == "Data Engineer"
     assert properties["URL"] == "https://93.184.216.34/jobs/2"

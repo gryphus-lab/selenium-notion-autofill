@@ -3,18 +3,28 @@
 import pytest
 
 from selenium_notion_autofill.config import (
-    DATABASE_ID,
     FIELD_SELECTORS,
-    NOTION_API_KEY,
+    get_database_id,
+    get_notion_api_key,
     validate_property_map,
 )
 
 
 def test_config_keys_exist():
     """Test that all required configuration keys are present."""
-    assert NOTION_API_KEY
-    assert DATABASE_ID
+    assert get_notion_api_key()
+    assert get_database_id()
     assert FIELD_SELECTORS
+
+
+def test_required_notion_settings_are_validated_when_accessed(monkeypatch):
+    monkeypatch.delenv("NOTION_API_KEY")
+    monkeypatch.delenv("DATABASE_ID")
+
+    with pytest.raises(RuntimeError, match="NOTION_API_KEY"):
+        get_notion_api_key()
+    with pytest.raises(RuntimeError, match="DATABASE_ID"):
+        get_database_id()
 
 
 def test_field_selectors_structure():

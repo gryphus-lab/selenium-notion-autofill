@@ -107,8 +107,10 @@ The canonical optional keys and their required Notion property types are:
 | `Notes` | Rich text |
 | `Last Update Date` | Date |
 | `Update Details` | Rich text |
+| `Description` | Rich text |
 
 These canonical keys can be remapped to existing database property names with `--prop-map` or `NOTION_PROPERTY_MAP_JSON`. These fields are silently dropped unless they are present in `FIELD_SELECTORS` or covered by a property map. The default stage value is `Applied`, so the target status property must define an `Applied` option.
+These canonical keys can be remapped to existing database property names with `--prop-map` or `NOTION_PROPERTY_MAP_JSON`. These fields are silently dropped unless they are selected in `FIELD_SELECTORS` or covered by a property map. The default stage value is `Applied`, so the target status property must define an `Applied` option.
 
 Release note: this is a schema-breaking change for `create_page` payloads.
 
