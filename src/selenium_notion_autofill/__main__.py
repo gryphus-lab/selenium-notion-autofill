@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import html
 import ipaddress
 import json
 import re
@@ -371,10 +372,15 @@ def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
     if m:
         result["h1"] = re.sub(r"<[^>]+>", "", m.group(1)).strip()
 
-    soup = BeautifulSoup(text, "html.parser")
-    for removable_tag in soup.find_all(["script", "style", "noscript"]):
-        removable_tag.decompose()
-    page_text = re.sub(r"\s+", " ", soup.get_text(" ")).strip()
+    visible_text = re.sub(
+        r"<\s*(?:script|style|noscript)\b[^>]*>.*?<\s*/\s*(?:script|style|noscript)\s*>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    page_text = re.sub(
+        r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", visible_text))
+    ).strip()
     if page_text:
         result["text"] = page_text
 
