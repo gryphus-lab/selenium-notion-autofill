@@ -1,7 +1,13 @@
 """Tests for configuration module."""
 
 import pytest
-from selenium_notion_autofill.config import FIELD_SELECTORS, NOTION_API_KEY, DATABASE_ID
+
+from selenium_notion_autofill.config import (
+    DATABASE_ID,
+    FIELD_SELECTORS,
+    NOTION_API_KEY,
+    validate_property_map,
+)
 
 
 def test_config_keys_exist():
@@ -29,3 +35,13 @@ def test_field_selectors_are_strings():
     """Test that all selectors are strings."""
     for field, selector in FIELD_SELECTORS.items():
         assert isinstance(selector, str), f"Selector for {field} is not a string"
+
+
+def test_validate_property_map_accepts_string_mapping():
+    assert validate_property_map({"Company": "Firma"}) == {"Company": "Firma"}
+
+
+@pytest.mark.parametrize("value", [[], {"Company": 1}, {1: "Firma"}])
+def test_validate_property_map_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        validate_property_map(value)

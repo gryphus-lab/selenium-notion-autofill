@@ -16,7 +16,7 @@ from selenium_notion_autofill.config import (
     EXECUTE_SCRIPT_CLICK,
     FIELD_SELECTORS,
     SCROLL_INTO_VIEW_SCRIPT,
-    WEBSITE_URL,
+    get_website_url,
 )
 from selenium_notion_autofill.utils.session_helper import load_session, save_session
 
@@ -222,7 +222,7 @@ def process_records(driver, wait, df, notion):
     """
 
     # Navigate to "Efforts to find work"
-    driver.get(WEBSITE_URL + "work-efforts")
+    driver.get(get_website_url() + "work-efforts")
     time.sleep(3)
 
     total_records = len(df) if hasattr(df, "__len__") else sum(1 for _ in df.iterrows())
@@ -450,7 +450,7 @@ def update_rejected_records(driver, wait, df, notion):
         df: Dataframe with rejected records to update
         notion: NotionHelper instance
     """
-    driver.get(WEBSITE_URL + "work-efforts")
+    driver.get(get_website_url() + "work-efforts")
     time.sleep(3)
 
     _expand_month_section(driver, df)
@@ -643,7 +643,7 @@ def handle_login(driver):
     session_restored = load_session(driver)
 
     if session_restored:
-        driver.get(WEBSITE_URL)
+        driver.get(get_website_url())
         time.sleep(5)
         print("✅ Today's session restored!")
 
@@ -653,7 +653,7 @@ def handle_login(driver):
             session_restored = False
 
     if not session_restored:
-        driver.get(WEBSITE_URL)
+        driver.get(get_website_url())
         print("\n🔄 Starting fresh manual login (daily policy)...")
 
         try:

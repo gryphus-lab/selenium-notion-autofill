@@ -25,12 +25,18 @@ def test_notion_helper_initialization(notion_helper):
 
 def test_build_notion_properties_maps_dates_and_type():
     properties = build_notion_properties(
-        {"Date": "2024-01-15", "Applied date": "2024-01-16", "Type": "electronic"}
+        {
+            "Date": "2024-01-15",
+            "Applied date": "2024-01-16",
+            "Last Update Date": "2024-01-17",
+            "Type": "electronic",
+        }
     )
 
     assert properties == {
         "Date": {"date": {"start": "2024-01-15"}},
         "Applied date": {"date": {"start": "2024-01-16"}},
+        "Last Update Date": {"date": {"start": "2024-01-17"}},
         "Type": {"select": {"name": "electronic"}},
     }
 
@@ -38,13 +44,28 @@ def test_build_notion_properties_maps_dates_and_type():
 @pytest.mark.parametrize(
     ("key", "value", "expected"),
     [
-        ("Company", "Acme", {"title": [{"text": {"content": "Acme"}}]}),
+        ("last_update_date", "2024-01-17", {"date": {"start": "2024-01-17"}}),
+        ("last update date", "2024-01-17", {"date": {"start": "2024-01-17"}}),
+        ("phone_number", "+41123456789", {"phone_number": "+41123456789"}),
+        ("custom_field", "value", {"rich_text": [{"text": {"content": "value"}}]}),
+    ],
+)
+def test_build_notion_properties_normalizes_underscore_date_names(key, value, expected):
+    assert build_notion_properties({key: value}) == {key: expected}
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected"),
+    [
+        ("Company", "Acme", {"rich_text": [{"text": {"content": "Acme"}}]}),
         ("URL", "https://example.com", {"url": "https://example.com"}),
         ("Email", "a@example.com", {"email": "a@example.com"}),
         ("Phone", "+41123456789", {"phone_number": "+41123456789"}),
         ("Tracked", True, {"checkbox": True}),
         ("Count", 3, {"number": 3}),
-        ("Role", "Engineer", {"rich_text": [{"text": {"content": "Engineer"}}]}),
+        ("Role", "Engineer", {"title": [{"text": {"content": "Engineer"}}]}),
+        ("Stage", "Applied", {"status": {"name": "Applied"}}),
+        ("Source", "Company site", {"select": {"name": "Company site"}}),
     ],
 )
 def test_build_notion_properties_maps_scalar_types(key, value, expected):
@@ -54,12 +75,12 @@ def test_build_notion_properties_maps_scalar_types(key, value, expected):
 def test_build_notion_properties_applies_mapping_and_skips_none():
     assert build_notion_properties(
         {"Company": "Acme", "Description": None}, {"Company": "Firma"}
-    ) == {"Firma": {"title": [{"text": {"content": "Acme"}}]}}
+    ) == {"Firma": {"rich_text": [{"text": {"content": "Acme"}}]}}
 
 
 def test_build_notion_properties_ignores_non_mapping_name_map():
     assert build_notion_properties({"Role": "Engineer"}, ["invalid"]) == {
-        "Role": {"rich_text": [{"text": {"content": "Engineer"}}]}
+        "Role": {"title": [{"text": {"content": "Engineer"}}]}
     }
 
 
@@ -408,7 +429,7 @@ def test_create_page_handles_response_statuses(
     assert result == expected
     assert calls[0][0].endswith("/pages")
     assert calls[0][1]["parent"] == {"database_id": "db-id"}
-    assert calls[0][1]["properties"]["Firma"]["title"]
+    assert calls[0][1]["properties"]["Firma"]["rich_text"]
     assert calls[0][1]["properties"]["Type"] == {"select": {"name": "electronic"}}
 
 

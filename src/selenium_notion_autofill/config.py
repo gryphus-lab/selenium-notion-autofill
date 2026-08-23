@@ -8,12 +8,25 @@ from dotenv import load_dotenv
 # Load user/instance-specific secrets from a local .env file (see .env.example).
 load_dotenv()
 
-# From Notion Integrations — set these in your .env file, never commit them.
-NOTION_API_KEY = os.environ["NOTION_API_KEY"]
-DATABASE_ID = os.environ["DATABASE_ID"]
 
-# Website selectors
-WEBSITE_URL = os.environ["WEBSITE_URL"]
+def _required_setting(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"Missing required configuration: {name}")
+    return value
+
+
+def validate_property_map(value: object) -> dict[str, str]:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        raise ValueError("must be a JSON object with string keys and values")
+    return value
+
+
+# From Notion Integrations — set these in your .env file, never commit them.
+NOTION_API_KEY = _required_setting("NOTION_API_KEY")
+DATABASE_ID = _required_setting("DATABASE_ID")
 
 APPLIED_DATE = "Applied date"
 EXIT_MESSAGE = "     Exiting...\n"
@@ -58,6 +71,14 @@ NOTION_PROPERTY_MAP_JSON = os.environ.get("NOTION_PROPERTY_MAP_JSON", "")
 NOTION_PROPERTY_MAP = None
 if NOTION_PROPERTY_MAP_JSON:
     try:
-        NOTION_PROPERTY_MAP = json.loads(NOTION_PROPERTY_MAP_JSON)
-    except Exception:
-        NOTION_PROPERTY_MAP = None
+        parsed_property_map = json.loads(NOTION_PROPERTY_MAP_JSON)
+        NOTION_PROPERTY_MAP = validate_property_map(parsed_property_map)
+    except ValueError as exc:
+        raise RuntimeError(
+            "Invalid NOTION_PROPERTY_MAP_JSON: expected a JSON object "
+            "with string keys and values"
+        ) from exc
+
+
+def get_website_url() -> str:
+    return _required_setting("WEBSITE_URL")
