@@ -30,6 +30,8 @@ from selenium_notion_autofill.config import (
     EXIT_MESSAGE,
     FIELD_SELECTORS,
     NOTION_PROPERTY_MAP,
+    get_database_id,
+    get_notion_api_key,
     validate_property_map,
 )
 
@@ -52,6 +54,7 @@ UPDATE_DETAILS = "Update Details"
 MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 MAX_REDIRECTS = 5
 NOTION_RICH_TEXT_LIMIT = 2000
+BLOCKED_PAGE_MESSAGE = "The website returned an access-blocked page"
 OPTIONAL_CREATE_FIELDS = (
     "Description",
     "Stage",
@@ -522,7 +525,7 @@ def _scrape_url(url: str) -> dict:
             return {"url": url}
         except Exception as exc:
             print(f"   ❌ Could not fetch URL {url}: {exc}")
-            return {"url": url}
+            return {"url": url, "blocked": BLOCKED_PAGE_MESSAGE}
 
     result = {"url": url}
     try:
@@ -708,8 +711,10 @@ def _resolve_property_map(prop_name_map: dict | None) -> dict | None:
 
 def _create_notion_page(notion, properties: dict[str, object], final_map: dict | None):
     if final_map:
-        return notion.create_page(DATABASE_ID, properties, prop_name_map=final_map)
-    return notion.create_page(DATABASE_ID, properties)
+        return notion.create_page(
+            get_database_id(), properties, prop_name_map=final_map
+        )
+    return notion.create_page(get_database_id(), properties)
 
 
 def _run_create(

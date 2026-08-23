@@ -6,6 +6,8 @@ from selenium_notion_autofill.config import (
     DATABASE_ID,
     FIELD_SELECTORS,
     NOTION_API_KEY,
+    get_database_id,
+    get_notion_api_key,
     validate_property_map,
 )
 
