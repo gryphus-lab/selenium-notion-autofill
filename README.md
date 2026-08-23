@@ -98,7 +98,17 @@ The `--prop-map` JSON file should map canonical keys (Company, Role, URL, Date, 
 
 The canonical Notion property mapping now uses a title property for `Role` and a rich-text property for `Company`. Existing databases must rename their title property from `Company` to `Role` before using `create_page`, or provide a `prop_name_map` override that maps those canonical names to the existing database properties.
 
-The canonical optional keys are `Stage` (status), `Source` (select), `Notes` (rich text), `Last Update Date` (date), and `Update Details` (rich text). They can be remapped with `--prop-map` or `NOTION_PROPERTY_MAP_JSON`. These fields are silently dropped unless they are present in `FIELD_SELECTORS` or covered by a property map. If retained, `Stage` requires a Notion status property and `Source` requires a select property. The default stage value is `Applied`, so the target status property must define an `Applied` option.
+The canonical optional keys and their required Notion property types are:
+
+| Canonical key | Notion property type |
+| --- | --- |
+| `Stage` | Status |
+| `Source` | Select |
+| `Notes` | Rich text |
+| `Last Update Date` | Date |
+| `Update Details` | Rich text |
+
+These canonical keys can be remapped to existing database property names with `--prop-map` or `NOTION_PROPERTY_MAP_JSON`. These fields are silently dropped unless they are present in `FIELD_SELECTORS` or covered by a property map. The default stage value is `Applied`, so the target status property must define an `Applied` option.
 
 Release note: this is a schema-breaking change for `create_page` payloads.
 
