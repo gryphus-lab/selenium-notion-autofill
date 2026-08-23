@@ -30,8 +30,6 @@ from selenium_notion_autofill.config import (
     EXIT_MESSAGE,
     FIELD_SELECTORS,
     NOTION_PROPERTY_MAP,
-    get_database_id,
-    get_notion_api_key,
     validate_property_map,
 )
 
@@ -54,7 +52,6 @@ UPDATE_DETAILS = "Update Details"
 MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 MAX_REDIRECTS = 5
 NOTION_RICH_TEXT_LIMIT = 2000
-BLOCKED_PAGE_MESSAGE = "The website returned an access-blocked page"
 OPTIONAL_CREATE_FIELDS = (
     "Description",
     "Stage",
@@ -436,9 +433,9 @@ class _PinnedTransport(httpx.BaseTransport):
     def __init__(self, address: str, hostname: str):
         self.address = address
         self.hostname = hostname
-        self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        self.ssl_context.load_default_certs()
+        self.ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+        self.ssl_context.check_hostname = True
+        self.ssl_context.verify_mode = ssl.CERT_REQUIRED
         self.pool = httpcore.ConnectionPool(
             ssl_context=self.ssl_context, network_backend=_PinnedNetworkBackend(address)
         )
@@ -522,10 +519,10 @@ def _scrape_url(url: str) -> dict:
             break
         except _DocumentTooLargeError:
             print(f"   ❌ Could not fetch URL {url}: document exceeds size limit")
-            return {"url": url, "blocked": "The document exceeds the size limit"}
+            return {"url": url}
         except Exception as exc:
             print(f"   ❌ Could not fetch URL {url}: {exc}")
-            return {"url": url, "blocked": f"The URL could not be fetched: {exc}"}
+            return {"url": url}
 
     result = {"url": url}
     try:
@@ -546,9 +543,9 @@ def _scrape_url(url: str) -> dict:
             marker in text_fields
             for marker in ("access denied", "unusual traffic", "robot check")
         ):
-            result["blocked"] = BLOCKED_PAGE_MESSAGE
+            result["blocked"] = "The website returned an access-blocked page"
     elif status_code in {403, 429}:
-        result["blocked"] = BLOCKED_PAGE_MESSAGE
+        result["blocked"] = "The website returned an access-blocked page"
     else:
         result["blocked"] = f"The website returned HTTP {status_code}"
     return result
@@ -711,10 +708,8 @@ def _resolve_property_map(prop_name_map: dict | None) -> dict | None:
 
 def _create_notion_page(notion, properties: dict[str, object], final_map: dict | None):
     if final_map:
-        return notion.create_page(
-            get_database_id(), properties, prop_name_map=final_map
-        )
-    return notion.create_page(get_database_id(), properties)
+        return notion.create_page(DATABASE_ID, properties, prop_name_map=final_map)
+    return notion.create_page(DATABASE_ID, properties)
 
 
 def _run_create(

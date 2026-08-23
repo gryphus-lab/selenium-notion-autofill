@@ -24,6 +24,10 @@ def validate_property_map(value: object) -> dict[str, str]:
     return value
 
 
+# From Notion Integrations — set these in your .env file, never commit them.
+NOTION_API_KEY = _required_setting("NOTION_API_KEY")
+DATABASE_ID = _required_setting("DATABASE_ID")
+
 APPLIED_DATE = "Applied date"
 EXIT_MESSAGE = "     Exiting...\n"
 SCROLL_INTO_VIEW_SCRIPT = "arguments[0].scrollIntoView({block: 'center'});"
@@ -78,11 +82,3 @@ if NOTION_PROPERTY_MAP_JSON:
 
 def get_website_url() -> str:
     return _required_setting("WEBSITE_URL")
-
-
-def get_notion_api_key() -> str:
-    return _required_setting("NOTION_API_KEY")
-
-
-def get_database_id() -> str:
-    return _required_setting("DATABASE_ID")

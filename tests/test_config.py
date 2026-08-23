@@ -3,9 +3,9 @@
 import pytest
 
 from selenium_notion_autofill.config import (
+    DATABASE_ID,
     FIELD_SELECTORS,
-    get_database_id,
-    get_notion_api_key,
+    NOTION_API_KEY,
     validate_property_map,
 )
 
