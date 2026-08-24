@@ -16,6 +16,14 @@ def _required_setting(name: str) -> str:
     return value
 
 
+def get_notion_api_key() -> str:
+    return _required_setting("NOTION_API_KEY")
+
+
+def get_database_id() -> str:
+    return _required_setting("DATABASE_ID")
+
+
 def validate_property_map(value: object) -> dict[str, str]:
     if not isinstance(value, dict) or not all(
         isinstance(key, str) and isinstance(item, str) for key, item in value.items()

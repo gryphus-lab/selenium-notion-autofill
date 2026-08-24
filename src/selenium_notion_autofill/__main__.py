@@ -27,11 +27,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from selenium_notion_autofill.config import (
     APPLIED_DATE,
-    DATABASE_ID,
     EXIT_MESSAGE,
     FIELD_SELECTORS,
-    NOTION_API_KEY,
     NOTION_PROPERTY_MAP,
+    get_database_id,
+    get_notion_api_key,
     validate_property_map,
 )
 
@@ -54,6 +54,7 @@ UPDATE_DETAILS = "Update Details"
 MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 MAX_REDIRECTS = 5
 NOTION_RICH_TEXT_LIMIT = 2000
+BLOCKED_PAGE_MESSAGE = "The website returned an access-blocked page"
 OPTIONAL_CREATE_FIELDS = (
     "Description",
     "Stage",
@@ -251,6 +252,8 @@ def _run_create_from_args(notion, args: list[str]) -> None:
         sys.exit(1)
 
     parsed_args = _create_arg_parser().parse_args(args)
+    if not parsed_args.dry_run:
+        notion = NotionHelper(get_notion_api_key())
     _run_create(
         notion,
         parsed_args.url,
@@ -265,13 +268,12 @@ def main():
     """Main entry point for the autofill script."""
     mode = sys.argv[1] if len(sys.argv) > 1 else "new"
 
-    notion = NotionHelper(NOTION_API_KEY)
     if mode == "update-rejections":
-        _run_update_rejections(notion)
+        _run_update_rejections(NotionHelper(get_notion_api_key()))
     elif mode == "new":
-        _run_new_entries(notion)
+        _run_new_entries(NotionHelper(get_notion_api_key()))
     elif mode == "create":
-        _run_create_from_args(notion, sys.argv[2:])
+        _run_create_from_args(None, sys.argv[2:])
     else:
         print(f"Unknown mode: {mode}")
         print(
@@ -283,7 +285,7 @@ def main():
 def _run_new_entries(notion):
     """Process new untracked entries for the current month."""
     month_filter = get_month_filter()
-    df = notion.get_database_data(DATABASE_ID, filter=month_filter)
+    df = notion.get_database_data(get_database_id(), filter=month_filter)
 
     if df.empty:
         print("\n     ⚠️ No new records to process for this month. ")
@@ -434,7 +436,9 @@ class _PinnedTransport(httpx.BaseTransport):
     def __init__(self, address: str, hostname: str):
         self.address = address
         self.hostname = hostname
-        self.ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+        self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self.ssl_context.load_default_certs()
+        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self.ssl_context.check_hostname = True
         self.ssl_context.verify_mode = ssl.CERT_REQUIRED
         self.pool = httpcore.ConnectionPool(
@@ -523,7 +527,7 @@ def _scrape_url(url: str) -> dict:
             return {"url": url}
         except Exception as exc:
             print(f"   ❌ Could not fetch URL {url}: {exc}")
-            return {"url": url}
+            return {"url": url, "blocked": f"The URL could not be fetched: {exc}"}
 
     result = {"url": url}
     try:
@@ -544,9 +548,9 @@ def _scrape_url(url: str) -> dict:
             marker in text_fields
             for marker in ("access denied", "unusual traffic", "robot check")
         ):
-            result["blocked"] = "The website returned an access-blocked page"
+            result["blocked"] = BLOCKED_PAGE_MESSAGE
     elif status_code in {403, 429}:
-        result["blocked"] = "The website returned an access-blocked page"
+        result["blocked"] = BLOCKED_PAGE_MESSAGE
     else:
         result["blocked"] = f"The website returned HTTP {status_code}"
     return result
@@ -709,8 +713,10 @@ def _resolve_property_map(prop_name_map: dict | None) -> dict | None:
 
 def _create_notion_page(notion, properties: dict[str, object], final_map: dict | None):
     if final_map:
-        return notion.create_page(DATABASE_ID, properties, prop_name_map=final_map)
-    return notion.create_page(DATABASE_ID, properties)
+        return notion.create_page(
+            get_database_id(), properties, prop_name_map=final_map
+        )
+    return notion.create_page(get_database_id(), properties)
 
 
 def _run_create(
@@ -805,7 +811,7 @@ def _process_rejected_records(driver, wait, df, notion) -> None:
 def _run_update_rejections(notion):
     """Update existing entries that have been rejected since submission."""
     rejected_filter = get_rejected_filter()
-    df = notion.get_database_data(DATABASE_ID, filter=rejected_filter)
+    df = notion.get_database_data(get_database_id(), filter=rejected_filter)
 
     if df.empty:
         print("\n     ⚠️ No rejected records to update for this month.")

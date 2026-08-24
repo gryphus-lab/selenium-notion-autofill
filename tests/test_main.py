@@ -1,8 +1,10 @@
 import builtins
 from datetime import datetime, timezone
+from typing import Any, cast
 
 import pandas as pd
 import pytest
+import httpcore
 import httpx
 
 from selenium_notion_autofill import __main__ as main_mod
@@ -298,7 +300,8 @@ def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
     monkeypatch.setattr(main_mod.httpx, "Client", fake_client_for_network_error)
 
     assert main_mod._scrape_url("https://93.184.216.34/jobs/3") == {
-        "url": "https://93.184.216.34/jobs/3"
+        "url": "https://93.184.216.34/jobs/3",
+        "blocked": "The URL could not be fetched: network unavailable",
     }
 
 
@@ -391,9 +394,9 @@ def test_pinned_network_backend_delegates_pinned_tcp_connection():
             calls.append(args)
             return "stream"
 
-    backend.backend = FakeBackend()
+    backend.backend = cast(Any, FakeBackend())
 
-    assert backend.connect_tcp("example.com", 443, 2, "local", ["option"]) == (
+    assert cast(Any, backend).connect_tcp("example.com", 443, 2, "local", ["option"]) == (
         "stream"
     )
     assert calls == [("93.184.216.34", 443, 2, "local", ["option"])]
@@ -574,9 +577,10 @@ def test_pinned_transport_rejects_oversized_content_length_and_closes_response()
     )
     transport = object.__new__(main_mod._PinnedTransport)
     transport.hostname = "example.com"
-    transport.pool = type(
-        "Pool", (), {"handle_request": lambda self, request: core_response}
-    )()
+    transport.pool = cast(
+        Any,
+        type("Pool", (), {"handle_request": lambda self, request: core_response})(),
+    )
 
     with pytest.raises(main_mod._DocumentTooLargeError):
         transport.handle_request(httpx.Request("GET", "https://example.com"))
@@ -588,7 +592,7 @@ def test_limited_response_stream_rejects_oversized_stream_without_content_length
     core_response = StubCoreResponse(
         [], (b"x" * main_mod.MAX_DOCUMENT_BYTES, b"overflow")
     )
-    stream = main_mod._LimitedResponseStream(core_response)
+    stream = main_mod._LimitedResponseStream(cast(httpcore.Response, core_response))
 
     with pytest.raises(main_mod._DocumentTooLargeError):
         list(stream)
@@ -747,7 +751,7 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     main_mod._run_create(notion, "https://93.184.216.34/jobs/2")
 
     database_id, properties, prop_name_map = notion.calls[0]
-    assert database_id == main_mod.DATABASE_ID
+    assert database_id == main_mod.get_database_id()
     assert properties["Company"] == "93.184.216.34"
     assert properties["Role"] == "Data Engineer"
     assert properties["URL"] == "https://93.184.216.34/jobs/2"
