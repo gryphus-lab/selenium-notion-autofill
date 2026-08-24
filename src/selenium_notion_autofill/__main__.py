@@ -436,7 +436,9 @@ class _PinnedTransport(httpx.BaseTransport):
     def __init__(self, address: str, hostname: str):
         self.address = address
         self.hostname = hostname
-        self.ssl_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+        self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self.ssl_context.load_default_certs()
+        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self.ssl_context.check_hostname = True
         self.ssl_context.verify_mode = ssl.CERT_REQUIRED
         self.pool = httpcore.ConnectionPool(
@@ -525,7 +527,7 @@ def _scrape_url(url: str) -> dict:
             return {"url": url}
         except Exception as exc:
             print(f"   ❌ Could not fetch URL {url}: {exc}")
-            return {"url": url, "blocked": BLOCKED_PAGE_MESSAGE}
+            return {"url": url, "blocked": f"The URL could not be fetched: {exc}"}
 
     result = {"url": url}
     try:
@@ -546,9 +548,9 @@ def _scrape_url(url: str) -> dict:
             marker in text_fields
             for marker in ("access denied", "unusual traffic", "robot check")
         ):
-            result["blocked"] = "The website returned an access-blocked page"
+            result["blocked"] = BLOCKED_PAGE_MESSAGE
     elif status_code in {403, 429}:
-        result["blocked"] = "The website returned an access-blocked page"
+        result["blocked"] = BLOCKED_PAGE_MESSAGE
     else:
         result["blocked"] = f"The website returned HTTP {status_code}"
     return result
