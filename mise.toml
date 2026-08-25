@@ -1,7 +1,7 @@
 [tools]
 python = "3.12"
-uv = 'latest'
-prettier = 'latest'
+uv = "latest"
+prettier = "latest"
 
 # Automatic virtual environment
 [env]
