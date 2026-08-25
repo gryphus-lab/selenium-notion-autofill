@@ -375,7 +375,7 @@ def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
         result["h1"] = re.sub(r"<[^>]+>", "", m.group(1)).strip()
 
     visible_text = re.sub(
-        r"<\s*(?:script|style|noscript)\b[^>]*>.*?<\s*/\s*(?:script|style|noscript)\s*>",
+        r"<\s*(?:script|style|noscript)\b[^>]*>.*?<\s*/\s*(?:script|style|noscript)\b(?:\s+[^>]*)?\s*>",
         " ",
         text,
         flags=re.IGNORECASE | re.DOTALL,
