@@ -3,7 +3,6 @@
 
 import argparse
 import ast
-import html
 import ipaddress
 import json
 import re
@@ -13,6 +12,7 @@ import ssl
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -346,47 +346,93 @@ def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, s
     return result
 
 
+class _HTMLFallbackExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.description: str | None = None
+        self.skip_depth = 0
+        self.title_depth = 0
+        self.h1_depth = 0
+        self.title_parts: list[str] = []
+        self.h1_parts: list[str] = []
+        self.text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_name = tag.lower()
+        if tag_name in {"script", "style", "noscript"}:
+            self.skip_depth += 1
+            return
+
+        if self.skip_depth:
+            return
+
+        if tag_name == "title":
+            self.title_depth += 1
+        elif tag_name == "h1":
+            self.h1_depth += 1
+        elif tag_name == "meta":
+            self._capture_meta_description(attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_name = tag.lower()
+        if tag_name in {"script", "style", "noscript"} and self.skip_depth:
+            self.skip_depth -= 1
+        elif tag_name == "title" and self.title_depth:
+            self.title_depth -= 1
+        elif tag_name == "h1" and self.h1_depth:
+            self.h1_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            return
+
+        value = data.strip()
+        if not value:
+            return
+
+        self.text_parts.append(value)
+        if self.title_depth:
+            self.title_parts.append(value)
+        if self.h1_depth:
+            self.h1_parts.append(value)
+
+    def _capture_meta_description(self, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {
+            name.lower(): value
+            for name, value in attrs
+            if isinstance(name, str) and isinstance(value, str)
+        }
+        meta_name = attr_map.get("name", "").lower()
+        meta_property = attr_map.get("property", "").lower()
+        if meta_name == "description" or meta_property == "og:description":
+            content = attr_map.get("content", "").strip()
+            if content:
+                self.description = content
+
+    def apply_to(self, result: dict[str, str]) -> dict[str, str]:
+        page_text = " ".join(self.text_parts).strip()
+        if page_text:
+            result["text"] = page_text
+
+        title = " ".join(self.title_parts).strip()
+        if title:
+            result["title"] = title
+
+        if self.description:
+            result["description"] = self.description
+
+        h1 = " ".join(self.h1_parts).strip()
+        if h1:
+            result["h1"] = h1
+
+        return result
+
+
 def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
-    m = re.search(r"<title>([^<]*+)</title>", text, re.IGNORECASE | re.DOTALL)
-    if m:
-        result["title"] = m.group(1).strip()
-
-    for attribute, attribute_value in (
-        ("name", "description"),
-        ("property", "og:description"),
-    ):
-        tags = re.findall(r"<meta\b[^>]*>", text, re.IGNORECASE)
-        attribute_pattern = (
-            rf"\b{attribute}\s*=\s*[\"']{re.escape(attribute_value)}[\"']"
-        )
-        for tag in tags:
-            if re.search(attribute_pattern, tag, re.IGNORECASE):
-                content = re.search(
-                    r"\bcontent\s*=\s*[\"']([^\"']*)[\"']", tag, re.IGNORECASE
-                )
-                if content:
-                    result["description"] = content.group(1).strip()
-                    break
-        if "description" in result:
-            break
-
-    m = re.search(r"<h1[^>]*>(.*?)</h1>", text, re.IGNORECASE | re.DOTALL)
-    if m:
-        result["h1"] = re.sub(r"<[^>]+>", "", m.group(1)).strip()
-
-    visible_text = re.sub(
-        r"<\s*(?:script|style|noscript)\b[^>]*>.*?<\s*/\s*(?:script|style|noscript)\s*>",
-        " ",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    page_text = re.sub(
-        r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", visible_text))
-    ).strip()
-    if page_text:
-        result["text"] = page_text
-
-    return result
+    parser = _HTMLFallbackExtractor()
+    parser.feed(text)
+    parser.close()
+    return parser.apply_to(result)
 
 
 class _PinnedNetworkBackend(httpcore.NetworkBackend):
@@ -436,8 +482,7 @@ class _PinnedTransport(httpx.BaseTransport):
     def __init__(self, address: str, hostname: str):
         self.address = address
         self.hostname = hostname
-        self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        self.ssl_context.load_default_certs()
+        self.ssl_context = ssl.create_default_context()
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self.ssl_context.check_hostname = True
         self.ssl_context.verify_mode = ssl.CERT_REQUIRED
