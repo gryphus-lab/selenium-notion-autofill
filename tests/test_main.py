@@ -75,6 +75,28 @@ def _create_call(notion):
     raise AssertionError("create_page was not called")
 
 
+@pytest.mark.parametrize(
+    ("company_prop", "filter_type"),
+    [("Firma", "rich_text"), ("Name", "title"), ("Title", "title")],
+)
+def test_existing_company_address_uses_matching_text_filter(company_prop, filter_type):
+    notion = FakeNotion(pd.DataFrame({"Adresse": ["Main Street 1"]}))
+
+    address = main_mod._existing_company_address(
+        notion,
+        "Acme",
+        {"Company": company_prop, "Address": "Adresse"},
+    )
+
+    assert address == "Main Street 1"
+    assert notion.calls == [
+        (
+            main_mod.get_database_id(),
+            {"property": company_prop, filter_type: {"equals": "Acme"}},
+        )
+    ]
+
+
 def test_extract_formatted_field_and_monday_helpers():
     assert main_mod.extract_formatted_field("{'string': 'x'}") == "x"
     assert main_mod.extract_formatted_field("bad") == "bad"

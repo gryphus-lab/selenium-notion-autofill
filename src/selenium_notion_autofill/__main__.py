@@ -835,6 +835,7 @@ def _build_create_properties(
 
 
 ADDRESS_FIELD = "Address"
+_TITLE_PROPERTY_NAMES = {"name", "title"}
 
 
 def _existing_company_address(
@@ -849,10 +850,13 @@ def _existing_company_address(
         return None
     company_prop = _actual_prop("Company", final_map)
     address_prop = _actual_prop(ADDRESS_FIELD, final_map)
+    text_filter = (
+        "title" if company_prop.casefold() in _TITLE_PROPERTY_NAMES else "rich_text"
+    )
     try:
         df = notion.get_database_data(
             get_database_id(),
-            filter={"property": company_prop, "rich_text": {"equals": company}},
+            filter={"property": company_prop, text_filter: {"equals": company}},
         )
     except Exception as exc:  # noqa: BLE001 - lookup is best-effort
         print(f"   ⚠️  Could not look up existing address for {company}: {exc}")
