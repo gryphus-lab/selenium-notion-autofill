@@ -67,6 +67,15 @@ class FakeNotion:
         return "new-page-id"
 
 
+def _create_call(notion):
+    """Return the create_page call tuple (3 elements) from FakeNotion.calls,
+    ignoring any get_database_data lookups (2-element tuples) made first."""
+    for call in notion.calls:
+        if len(call) == 3:
+            return call
+    raise AssertionError("create_page was not called")
+
+
 def test_extract_formatted_field_and_monday_helpers():
     assert main_mod.extract_formatted_field("{'string': 'x'}") == "x"
     assert main_mod.extract_formatted_field("bad") == "bad"
@@ -627,7 +636,7 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert "📝 Values prepared for Notion:" in output
     assert "   Company: [length=4, preview=Acme]" in output
     assert "   Role: [length=9, preview=Developer]" in output
-    assert "   Stage:" not in output
+    assert "   Stage: Applied" in output
     assert "   Source:" not in output
     assert "   Notes:" not in output
     assert "   Last Update Date:" not in output
@@ -656,10 +665,10 @@ def test_run_create_populates_zurich_fields(monkeypatch):
         "https://www.careers.zurich.com/job/1369843657",
     )
 
-    _, properties, _ = notion.calls[0]
+    _, properties, _ = _create_call(notion)
     assert properties["Company"] == "Zurich Insurance"
     assert properties["Role"] == "Head Legal IT and Operations 80-100%"
-    assert "Stage" not in properties
+    assert properties["Stage"] == "Applied"
     assert "Source" not in properties
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
@@ -680,7 +689,7 @@ def test_run_create_retains_optional_fields_in_property_map(monkeypatch):
         prop_name_map={"Notes": "Job notes", "Source": "Origin"},
     )
 
-    _, properties, _ = notion.calls[0]
+    _, properties, _ = _create_call(notion)
     assert properties["Notes"] == "Notes text"
     assert properties["Source"] == "Company site"
 
@@ -750,14 +759,14 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
 
     main_mod._run_create(notion, "https://93.184.216.34/jobs/2")
 
-    database_id, properties, prop_name_map = notion.calls[0]
+    database_id, properties, prop_name_map = _create_call(notion)
     assert database_id == main_mod.get_database_id()
     assert properties["Company"] == "93.184.216.34"
     assert properties["Role"] == "Data Engineer"
     assert properties["URL"] == "https://93.184.216.34/jobs/2"
     assert properties["Type"] == "electronic"
     assert properties["Applied date"]
-    assert "Stage" not in properties
+    assert properties["Stage"] == "Applied"
     assert "Source" not in properties
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
