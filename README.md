@@ -100,13 +100,13 @@ The canonical Notion property mapping now uses a title property for `Role` and a
 
 The canonical optional keys and their required Notion property types are:
 
-| Canonical key | Notion property type |
-| --- | --- |
-| `Stage` | Status |
-| `Source` | Select |
-| `Notes` | Rich text |
-| `Last Update Date` | Date |
-| `Update Details` | Rich text |
+| Canonical key      | Notion property type |
+| ------------------ | -------------------- |
+| `Stage`            | Status               |
+| `Source`           | Select               |
+| `Notes`            | Rich text            |
+| `Last Update Date` | Date                 |
+| `Update Details`   | Rich text            |
 
 These canonical keys can be remapped to existing database property names with `--prop-map` or `NOTION_PROPERTY_MAP_JSON`. These fields are silently dropped unless they are present in `FIELD_SELECTORS` or covered by a property map. The default stage value is `Applied`, so the target status property must define an `Applied` option.
 These canonical keys can be remapped to existing database property names with `--prop-map` or `NOTION_PROPERTY_MAP_JSON`. These fields are silently dropped unless they are selected in `FIELD_SELECTORS` or covered by a property map. The default stage value is `Applied`, so the target status property must define an `Applied` option.

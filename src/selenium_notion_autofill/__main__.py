@@ -37,7 +37,7 @@ from selenium_notion_autofill.config import (
 
 try:
     from webdriver_manager.chrome import ChromeDriverManager
-except ImportError:  # pragma: no cover - optional dependency
+except Exception:  # pragma: no cover - optional dependency
     ChromeDriverManager = None
     import shutil
 
