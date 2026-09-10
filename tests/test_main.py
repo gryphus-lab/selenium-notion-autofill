@@ -2,10 +2,10 @@ import builtins
 from datetime import datetime, timezone
 from typing import Any, cast
 
-import pandas as pd
-import pytest
 import httpcore
 import httpx
+import pandas as pd
+import pytest
 
 from selenium_notion_autofill import __main__ as main_mod
 
@@ -67,6 +67,30 @@ class FakeNotion:
         return "new-page-id"
 
 
+class AddressLookupNotion(FakeNotion):
+    def __init__(self, df, failing_filter_type=None):
+        super().__init__(df)
+        self.failing_filter_type = failing_filter_type
+
+    def get_database_data(self, database_id, filter=None):
+        self.calls.append((database_id, filter))
+        filter_type = next(
+            (key for key in ("rich_text", "title") if key in filter), None
+        )
+        if filter_type == self.failing_filter_type:
+            raise ValueError("invalid property type")
+        return self.df.copy()
+
+
+def _create_call(notion):
+    """Return the create_page call tuple (3 elements) from FakeNotion.calls,
+    ignoring any get_database_data lookups (2-element tuples) made first."""
+    for call in notion.calls:
+        if len(call) == 3:
+            return call
+    raise AssertionError("create_page was not called")
+
+
 def test_extract_formatted_field_and_monday_helpers():
     assert main_mod.extract_formatted_field("{'string': 'x'}") == "x"
     assert main_mod.extract_formatted_field("bad") == "bad"
@@ -109,6 +133,107 @@ def test_get_month_and_rejected_filters_use_shared_dates(monkeypatch):
     assert month_filter["and"][2]["property"] == "Tracked"
     assert rejected_filter["and"][2]["property"] == "Tracked"
     assert rejected_filter["and"][3]["property"] == "Stage"
+
+
+def test_create_arg_parser_uses_expected_defaults():
+    args = main_mod._create_arg_parser().parse_args(["https://example.com/job"])
+
+    assert args.url == "https://example.com/job"
+    assert args.dry_run is False
+    assert args.prop_map is None
+    assert args.company_override is None
+    assert args.role_override is None
+
+
+def test_create_arg_parser_parses_optional_arguments():
+    args = main_mod._create_arg_parser().parse_args(
+        [
+            "https://example.com/job",
+            "--dry-run",
+            "--prop-map",
+            "properties.json",
+            "--company",
+            "Acme",
+            "--role",
+            "Software Engineer",
+        ]
+    )
+
+    assert args.url == "https://example.com/job"
+    assert args.dry_run is True
+    assert args.prop_map == "properties.json"
+    assert args.company_override == "Acme"
+    assert args.role_override == "Software Engineer"
+
+
+def test_run_create_from_args_requires_arguments(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod._run_create_from_args(None, [])
+
+    assert exc_info.value.code == 1
+    assert f"Usage: {main_mod.CREATE_USAGE}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_run_create_from_args_forwards_options(monkeypatch, dry_run):
+    original_notion = object()
+    created_notion = object()
+    calls = []
+
+    monkeypatch.setattr(
+        main_mod, "_load_prop_name_map", lambda path: {"Company": "Firma"}
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_run_create",
+        lambda notion, url, **kwargs: calls.append((notion, url, kwargs)),
+    )
+    monkeypatch.setattr(main_mod, "get_notion_api_key", lambda: "api-key")
+    monkeypatch.setattr(main_mod, "NotionHelper", lambda api_key: created_notion)
+
+    main_mod._run_create_from_args(
+        original_notion,
+        [
+            "https://example.com/job",
+            *(["--dry-run"] if dry_run else []),
+            "--prop-map",
+            "properties.json",
+            "--company",
+            "Acme",
+            "--role",
+            "Software Engineer",
+        ],
+    )
+
+    assert calls == [
+        (
+            original_notion if dry_run else created_notion,
+            "https://example.com/job",
+            {
+                "dry_run": dry_run,
+                "prop_name_map": {"Company": "Firma"},
+                "company_override": "Acme",
+                "role_override": "Software Engineer",
+            },
+        )
+    ]
+
+
+def test_existing_company_address_retries_with_title_and_matches_case_insensitively():
+    notion = AddressLookupNotion(
+        pd.DataFrame([{"Firma": "aCME", "Adresse": "Main Street 1"}]),
+        failing_filter_type="rich_text",
+    )
+
+    address = main_mod._existing_company_address(
+        notion,
+        "Acme",
+        {"Company": "Firma", "Address": "Adresse"},
+    )
+
+    assert address == "Main Street 1"
+    assert notion.calls[0][1]["rich_text"] == {"equals": "Acme"}
+    assert notion.calls[1][1]["title"] == {"equals": "Acme"}
 
 
 def test_prepare_dataframe_transforms_columns():
@@ -154,6 +279,40 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
         "h1": "Senior Engineer",
         "text": "Engineer\nSenior Engineer",
     }
+
+
+def test_scrape_with_beautifulsoup_extracts_company_from_nested_json_ld_graph():
+    result = main_mod._scrape_with_beautifulsoup(
+        """
+                <html>
+                    <head>
+                        <script type="application/ld+json">
+                            {"@context":"https://schema.org","@graph":[
+                                {"@type":"JobPosting","hiringOrganization":{"name":"Acme"}}
+                            ]}
+                        </script>
+                    </head>
+                    <body><h1>Engineer</h1></body>
+                </html>
+                """,
+        {},
+    )
+
+    assert result["company"] == "Acme"
+
+
+def test_scrape_with_beautifulsoup_extracts_company_from_object_json_ld_graph():
+    result = main_mod._scrape_with_beautifulsoup(
+        """
+                <script type="application/ld+json">
+                    {"@graph":{"@type":"JobPosting",
+                        "hiringOrganization":{"name":"Globex"}}}
+                </script>
+                """,
+        {},
+    )
+
+    assert result["company"] == "Globex"
 
 
 def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
@@ -396,9 +555,9 @@ def test_pinned_network_backend_delegates_pinned_tcp_connection():
 
     backend.backend = cast(Any, FakeBackend())
 
-    assert cast(Any, backend).connect_tcp("example.com", 443, 2, "local", ["option"]) == (
-        "stream"
-    )
+    assert cast(Any, backend).connect_tcp(
+        "example.com", 443, 2, "local", ["option"]
+    ) == ("stream")
     assert calls == [("93.184.216.34", 443, 2, "local", ["option"])]
 
 
@@ -461,9 +620,7 @@ def test_scrape_url_accepts_hostname_with_public_dns(monkeypatch):
     monkeypatch.setattr(
         main_mod.socket,
         "getaddrinfo",
-        lambda *args, **kwargs: [
-            (10, 1, 6, "", ("2001:4860:4860::8888", 443, 0, 0))
-        ],
+        lambda *args, **kwargs: [(10, 1, 6, "", ("2001:4860:4860::8888", 443, 0, 0))],
     )
     monkeypatch.setattr(
         main_mod.httpx,
@@ -627,7 +784,8 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert "📝 Values prepared for Notion:" in output
     assert "   Company: [length=4, preview=Acme]" in output
     assert "   Role: [length=9, preview=Developer]" in output
-    assert "   Stage:" not in output
+    assert "   Stage: [length=7, preview=Applied]" in output
+    assert "'Stage': {'status': {'name': 'Applied'}}" in output
     assert "   Source:" not in output
     assert "   Notes:" not in output
     assert "   Last Update Date:" not in output
@@ -656,10 +814,10 @@ def test_run_create_populates_zurich_fields(monkeypatch):
         "https://www.careers.zurich.com/job/1369843657",
     )
 
-    _, properties, _ = notion.calls[0]
+    _, properties, _ = _create_call(notion)
     assert properties["Company"] == "Zurich Insurance"
     assert properties["Role"] == "Head Legal IT and Operations 80-100%"
-    assert "Stage" not in properties
+    assert properties["Stage"] == "Applied"
     assert "Source" not in properties
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
@@ -670,7 +828,11 @@ def test_run_create_retains_optional_fields_in_property_map(monkeypatch):
     monkeypatch.setattr(
         main_mod,
         "_scrape_url",
-        lambda url: {"url": url, "text": "Notes text", "description": "Description text"},
+        lambda url: {
+            "url": url,
+            "text": "Notes text",
+            "description": "Description text",
+        },
     )
     notion = FakeNotion()
 
@@ -680,7 +842,7 @@ def test_run_create_retains_optional_fields_in_property_map(monkeypatch):
         prop_name_map={"Notes": "Job notes", "Source": "Origin"},
     )
 
-    _, properties, _ = notion.calls[0]
+    _, properties, _ = _create_call(notion)
     assert properties["Notes"] == "Notes text"
     assert properties["Source"] == "Company site"
 
@@ -726,9 +888,7 @@ def test_load_prop_name_map_accepts_file_in_working_directory(tmp_path, monkeypa
     assert main_mod._load_prop_name_map("./prop_map.json") == {"Company": "Firma"}
 
 
-@pytest.mark.parametrize(
-    "content", ["[]", '{"Company": 1}', '{"Company": ["Firma"]}']
-)
+@pytest.mark.parametrize("content", ["[]", '{"Company": 1}', '{"Company": ["Firma"]}'])
 def test_load_prop_name_map_rejects_non_string_object_maps(
     tmp_path, monkeypatch, content
 ):
@@ -750,14 +910,14 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
 
     main_mod._run_create(notion, "https://93.184.216.34/jobs/2")
 
-    database_id, properties, prop_name_map = notion.calls[0]
+    database_id, properties, prop_name_map = _create_call(notion)
     assert database_id == main_mod.get_database_id()
     assert properties["Company"] == "93.184.216.34"
     assert properties["Role"] == "Data Engineer"
     assert properties["URL"] == "https://93.184.216.34/jobs/2"
     assert properties["Type"] == "electronic"
     assert properties["Applied date"]
-    assert "Stage" not in properties
+    assert properties["Stage"] == "Applied"
     assert "Source" not in properties
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
@@ -921,10 +1081,11 @@ def test_create_driver_no_chromedriver_found(monkeypatch):
 
 
 def test_prepare_dataframe_with_missing_columns():
-    """Test prepare_dataframe when Date and Type columns are missing."""
+    """Test prepare_dataframe when Type is missing and Date is empty."""
     df = pd.DataFrame(
         [
             {
+                "Date": None,
                 "PLZ_Ort": "12345 Bern",
                 "Company": "Test Corp",
             }
@@ -934,8 +1095,10 @@ def test_prepare_dataframe_with_missing_columns():
     main_mod.prepare_dataframe(df)
 
     assert df["PLZ_Ort"].iloc[0] == "1234"
+    assert pd.isna(df["Date"].iloc[0])
     assert df["RAV"].iloc[0] == "false"
-    assert "Date" not in df.columns or pd.isna(df["Date"].iloc[0])
+    assert df["Arbeitspensum"].iloc[0] == "false"
+    assert df["Status"].iloc[0] == "false"
 
 
 def test_get_open_period_december_to_january(monkeypatch):
@@ -1006,7 +1169,11 @@ def test_run_update_rejections_with_exception_handling(monkeypatch):
     )
     notion = FakeNotion(df)
 
-    driver = FakeDriver()
+    class ScreenshotFailingDriver(FakeDriver):
+        def save_screenshot(self, path):
+            raise OSError("disk full")
+
+    driver = ScreenshotFailingDriver()
     wait = FakeWait(driver, 1)
 
     monkeypatch.setattr(main_mod, "get_rejected_filter", lambda: {"filter": "rejected"})

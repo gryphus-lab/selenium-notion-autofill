@@ -71,6 +71,46 @@ def test_fill_checkbox_and_radio_execute_script(monkeypatch):
     assert executed
 
 
+def test_fill_checkbox_and_radio_skip_unselected_elements():
+    executed = []
+
+    class Driver:
+        def execute_script(self, script, element):
+            executed.append(script)
+
+    class Elem:
+        def is_displayed(self):
+            return False
+
+    element = Elem()
+    selenium_helper.fill_checkbox(Driver(), element, "Hidden")
+    selenium_helper.fill_radio(Driver(), element, "Radio", False)
+
+    assert executed == []
+
+
+def test_get_notion_scalar_value_returns_original_for_malformed_literal():
+    value = "{'type': 'string'"
+
+    assert selenium_helper.get_notion_scalar_value(value) == value
+
+
+def test_fill_field_saves_screenshot_on_webdriver_error():
+    screenshots = []
+
+    class Wait:
+        def until(self, condition):
+            raise TimeoutException("missing")
+
+    class Driver:
+        def save_screenshot(self, path):
+            screenshots.append(path)
+
+    selenium_helper.fill_field(Driver(), Wait(), "Role", "input.role", "Engineer")
+
+    assert screenshots == ["results/jobroom_fill_field_error.png"]
+
+
 def test_fill_field_type_unknown_returns_none():
     # When Type resolves to None, fill_field should return early
     result = selenium_helper.fill_field(
@@ -547,6 +587,7 @@ def test_resolve_type_selector_dict_with_string():
     result = selenium_helper.resolve_type_selector(
         {"type": "string", "string": "vorstellungsgespräch"}
     )
+    assert result is not None
     assert "Vorstellungsgespräch" in result
 
 
@@ -641,6 +682,7 @@ def test_set_status_rejected_uses_fallback_xpath(monkeypatch):
     monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
 
     script_calls = []
+    find_calls = []
 
     class Driver:
         def execute_script(self, script, elem):
@@ -648,11 +690,22 @@ def test_set_status_rejected_uses_fallback_xpath(monkeypatch):
 
     class Entry:
         def find_element(self, by, selector):
-            raise selenium_helper.NoSuchElementException("Not found")
+            find_calls.append((by, selector))
+            if len(find_calls) == 1:
+                raise selenium_helper.NoSuchElementException("Not found")
+            return SimpleNamespace()
 
     driver = Driver()
     result = selenium_helper._set_status_rejected(driver, Entry())
-    assert result is False
+    assert result is True
+    assert find_calls == [
+        (selenium_helper.By.CSS_SELECTOR, "label[for$='-REJECTED']"),
+        (
+            selenium_helper.By.XPATH,
+            ".//label[contains(text(), 'Absage')]",
+        ),
+    ]
+    assert script_calls
 
 
 def test_set_status_rejected_returns_true_on_success(monkeypatch):
@@ -689,8 +742,8 @@ def test_matches_role_checks_first_word_of_role():
     class Entry:
         text = "Acme Corp Senior Developer"
 
-    assert selenium_helper._matches_role(Entry(), "Developer") is True
-    assert selenium_helper._matches_role(Entry(), "Manager") is False
+    assert selenium_helper._matches_role(Entry(), "Developer Backend") is True
+    assert selenium_helper._matches_role(Entry(), "Manager Backend") is False
 
 
 def test_find_entry_by_company_requires_matching_role():

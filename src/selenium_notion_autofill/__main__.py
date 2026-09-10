@@ -37,7 +37,7 @@ from selenium_notion_autofill.config import (
 
 try:
     from webdriver_manager.chrome import ChromeDriverManager
-except ImportError:  # pragma: no cover - optional dependency
+except Exception:  # pragma: no cover - optional dependency
     ChromeDriverManager = None
     import shutil
 
@@ -66,6 +66,8 @@ OPTIONAL_CREATE_FIELDS = (
 HOSTNAME_COMPANY_MAP = {
     r"(?:^|\.)careers\.zurich\.com$": "Zurich Insurance",
 }
+# og:site_name values that are the job board itself, not the employer.
+_JOB_BOARD_SITE_NAMES = {"linkedin", "indeed", "jobs", "xing", "glassdoor"}
 
 
 class _DocumentTooLargeError(RuntimeError):
@@ -322,7 +324,12 @@ def _meta_content(soup, attrs: dict[str, str]) -> str | None:
 
 
 def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, str]:
+    """Extract job metadata into and return the supplied result mapping."""
     soup = BeautifulSoup(text, "html.parser")
+    company = _extract_company_from_soup(soup)
+    if company:
+        result["company"] = company
+
     for element in soup(["script", "style", "noscript"]):
         element.decompose()
 
@@ -344,6 +351,97 @@ def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, s
     if h1:
         result["h1"] = h1.get_text(strip=True)
     return result
+
+
+def _extract_company_from_soup(soup) -> str | None:
+    """Best-effort employer/company name from a job-posting page.
+
+    Priority: JSON-LD JobPosting hiringOrganization → LinkedIn/Indeed company
+    anchors → og:site_name (unless it's the job board itself). Returns None if
+    nothing reliable is found, so callers can fall back to the hostname map.
+    """
+    company = _extract_company_from_json_ld(soup)
+    if company:
+        return company
+
+    company = _extract_company_from_selectors(soup)
+    if company:
+        return company
+
+    return _extract_company_from_site_name(soup)
+
+
+def _extract_company_from_json_ld(soup) -> str | None:
+    """Return the first hiring organization in JSON-LD or its @graph nodes."""
+    for script in soup.find_all("script", {"type": "application/ld+json"}):
+        raw = script.string or script.get_text() or ""
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        company = _extract_company_from_json_ld_data(data)
+        if company:
+            return company
+    return None
+
+
+def _extract_company_from_json_ld_data(data) -> str | None:
+    """Return the first hiring organization name found in JSON-LD data."""
+    if isinstance(data, list):
+        for node in data:
+            company = _extract_company_from_json_ld_data(node)
+            if company:
+                return company
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    company = _extract_company_from_json_ld_node(data)
+    if company:
+        return company
+
+    graph = data.get("@graph")
+    if isinstance(graph, (dict, list)):
+        return _extract_company_from_json_ld_data(graph)
+    return None
+
+
+def _extract_company_from_json_ld_node(node) -> str | None:
+    """Return a node's hiring organization name, if present."""
+    if not isinstance(node, dict):
+        return None
+    organization = node.get("hiringOrganization")
+    if isinstance(organization, dict) and organization.get("name"):
+        return str(organization["name"]).strip()
+    if isinstance(organization, str) and organization.strip():
+        return organization.strip()
+    return None
+
+
+def _extract_company_from_selectors(soup) -> str | None:
+    """Extract an employer from common LinkedIn and Indeed page elements."""
+    selectors = [
+        ("a", {"class": re.compile(r"topcard__org-name-link|company")}),
+        (None, {"class": re.compile(r"topcard__flavor")}),
+        (None, {"data-testid": re.compile(r"company-name|inlineHeader-companyName")}),
+        (None, {"class": re.compile(r"jobsearch-CompanyInfoContainer")}),
+    ]
+    for tag_name, attrs in selectors:
+        element = soup.find(tag_name, attrs) if tag_name else soup.find(attrs=attrs)
+        if element:
+            name = element.get_text(strip=True)
+            if name:
+                return name
+    return None
+
+
+def _extract_company_from_site_name(soup) -> str | None:
+    """Return a non-job-board Open Graph site name, if present."""
+    site_name = _meta_content(soup, {"property": "og:site_name"})
+    if site_name and site_name.strip().lower() not in _JOB_BOARD_SITE_NAMES:
+        return site_name.strip()
+    return None
 
 
 class _HTMLFallbackExtractor(HTMLParser):
@@ -480,9 +578,12 @@ class _LimitedResponseStream(httpx.SyncByteStream):
 
 class _PinnedTransport(httpx.BaseTransport):
     def __init__(self, address: str, hostname: str):
+        """Initialize a transport pinned to an address and TLS hostname."""
         self.address = address
         self.hostname = hostname
-        self.ssl_context = ssl.create_default_context()
+        self.ssl_context = ssl.create_default_context(  # NOSONAR - secure TLS defaults
+            purpose=ssl.Purpose.SERVER_AUTH
+        )
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self.ssl_context.check_hostname = True
         self.ssl_context.verify_mode = ssl.CERT_REQUIRED
@@ -657,20 +758,39 @@ def _source_from_url(url: str) -> str:
     return "Company site"
 
 
-def _resolve_company_name(company: str, company_override: str | None) -> str:
+def _resolve_company_name(
+    hostname: str,
+    company_override: str | None,
+    scraped_company: str | None = None,
+) -> str:
+    """Resolve a company from an override, hostname mapping, scraped value, or host."""
+    # 1) explicit override always wins
     if company_override:
         return company_override
-    normalized_company = company.rstrip(".").lower()
+    # 2) known hostname → company mapping (e.g. career portals)
+    normalized_company = hostname.rstrip(".").lower()
     for hostname_pattern, company_name in HOSTNAME_COMPANY_MAP.items():
         if re.search(hostname_pattern, normalized_company):
             return company_name
-    return company
+    # 3) company scraped from the page (JobPosting/og:site_name/company element)
+    if scraped_company and scraped_company.strip():
+        return scraped_company.strip()
+    # 4) last resort: the hostname (previous behaviour)
+    return hostname
+
+
+# Fields that must always be present on a newly created entry, regardless of
+# whether they appear in FIELD_SELECTORS or the property map.
+_ALWAYS_KEEP_CREATE_FIELDS = ("Stage",)
 
 
 def _remove_unmapped_optional_properties(
     properties: dict[str, object], final_map: dict[str, str] | None
 ) -> None:
+    """Remove unconfigured optional properties in place, preserving required ones."""
     for field_name in OPTIONAL_CREATE_FIELDS:
+        if field_name in _ALWAYS_KEEP_CREATE_FIELDS:
+            continue
         if field_name not in FIELD_SELECTORS and field_name not in (final_map or {}):
             properties.pop(field_name, None)
 
@@ -681,6 +801,7 @@ def _build_create_properties(
     company: str,
     title: str,
 ) -> dict[str, object]:
+    """Build canonical properties for a new application with an Applied stage."""
     today_iso = datetime.now(timezone.utc).date().isoformat()
     values = {
         "Company": company,
@@ -706,7 +827,69 @@ def _build_create_properties(
         )
         if field_name in values
     }
+    # New applications always start at Stage "Applied".
+    properties["Stage"] = "Applied"
     return properties
+
+
+ADDRESS_FIELD = "Address"
+
+
+def _existing_company_address(
+    notion, company: str, final_map: dict | None
+) -> str | None:
+    """Return the first non-empty address for entries matching the company.
+
+    Property mappings are applied to the query and result column. Returns None
+    when the lookup cannot run, fails, has no matches, or finds no address.
+    """
+    if notion is None or not company or not company.strip():
+        return None
+    company_prop = _actual_prop("Company", final_map)
+    address_prop = _actual_prop(ADDRESS_FIELD, final_map)
+    filters = (
+        {"property": company_prop, "rich_text": {"equals": company}},
+        {"property": company_prop, "title": {"equals": company}},
+    )
+    df = None
+    for company_filter in filters:
+        try:
+            df = notion.get_database_data(get_database_id(), filter=company_filter)
+            break
+        except Exception as exc:  # noqa: BLE001 - lookup is best-effort
+            lookup_error = exc
+    if df is None:
+        print(f"   ⚠️  Could not look up existing address for {company}: {lookup_error}")
+        return None
+    if df is None or df.empty or address_prop not in df.columns:
+        return None
+    company_values = df[company_prop] if company_prop in df.columns else []
+    for company_value, address in zip(company_values, df[address_prop]):
+        if (
+            isinstance(company_value, str)
+            and company_value.strip().casefold() == company.strip().casefold()
+            and isinstance(address, str)
+            and address.strip()
+        ):
+            return address.strip()
+    return None
+
+
+def _apply_existing_company_address(
+    notion, properties: dict[str, object], company: str, final_map: dict | None
+) -> None:
+    """Add a known company address to properties in place when one is found."""
+    address = _existing_company_address(notion, company, final_map)
+    if address:
+        properties[ADDRESS_FIELD] = address
+        print(f"   📍 Reused address for {company}: {address}")
+
+
+def _actual_prop(canonical: str, final_map: dict | None) -> str:
+    """Return a mapped property name, falling back to its canonical name."""
+    if isinstance(final_map, dict):
+        return final_map.get(canonical, canonical)
+    return canonical
 
 
 def _truncate_optional_text(value: object) -> str | None:
@@ -772,11 +955,14 @@ def _run_create(
     company_override: str | None = None,
     role_override: str | None = None,
 ):
-    """Create a Notion page using the same property names the Selenium script expects.
+    """Create a Notion job-application page from metadata scraped from a URL.
 
-    The database field names must align with `FIELD_SELECTORS` keys, which are the
-    same names used by the rest of the automation. This keeps the new URL entry
-    feature consistent with the Job-Room autofill flow.
+    A dry run prints the mapped payload without making Notion API calls. For a
+    real creation, a known address for the resolved company is reused when
+    available.
+
+    Raises:
+        SystemExit: If the URL cannot be scraped safely, is blocked, or creation fails.
     """
     try:
         scraped = _scrape_url(url)
@@ -795,9 +981,13 @@ def _run_create(
     hostname = parsed.hostname or parsed.netloc or url
 
     title = role_override or scraped.get("h1") or scraped.get("title") or hostname
-    company = _resolve_company_name(hostname, company_override)
+    company = _resolve_company_name(hostname, company_override, scraped.get("company"))
     properties = _build_create_properties(url, scraped, company, title)
     _remove_unmapped_optional_properties(properties, final_map)
+    # Dry-run must not touch the Notion API; only look up a reusable address for
+    # a real create.
+    if not dry_run:
+        _apply_existing_company_address(notion, properties, company, final_map)
 
     _log_prepared_properties(properties)
 
