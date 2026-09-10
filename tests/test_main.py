@@ -2,10 +2,10 @@ import builtins
 from datetime import datetime, timezone
 from typing import Any, cast
 
-import pandas as pd
-import pytest
 import httpcore
 import httpx
+import pandas as pd
+import pytest
 
 from selenium_notion_autofill import __main__ as main_mod
 
@@ -151,6 +151,59 @@ def test_create_arg_parser_parses_optional_arguments():
     assert args.role_override == "Software Engineer"
 
 
+def test_run_create_from_args_requires_arguments(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main_mod._run_create_from_args(None, [])
+
+    assert exc_info.value.code == 1
+    assert f"Usage: {main_mod.CREATE_USAGE}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_run_create_from_args_forwards_options(monkeypatch, dry_run):
+    original_notion = object()
+    created_notion = object()
+    calls = []
+
+    monkeypatch.setattr(
+        main_mod, "_load_prop_name_map", lambda path: {"Company": "Firma"}
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_run_create",
+        lambda notion, url, **kwargs: calls.append((notion, url, kwargs)),
+    )
+    monkeypatch.setattr(main_mod, "get_notion_api_key", lambda: "api-key")
+    monkeypatch.setattr(main_mod, "NotionHelper", lambda api_key: created_notion)
+
+    main_mod._run_create_from_args(
+        original_notion,
+        [
+            "https://example.com/job",
+            *(["--dry-run"] if dry_run else []),
+            "--prop-map",
+            "properties.json",
+            "--company",
+            "Acme",
+            "--role",
+            "Software Engineer",
+        ],
+    )
+
+    assert calls == [
+        (
+            original_notion if dry_run else created_notion,
+            "https://example.com/job",
+            {
+                "dry_run": dry_run,
+                "prop_name_map": {"Company": "Firma"},
+                "company_override": "Acme",
+                "role_override": "Software Engineer",
+            },
+        )
+    ]
+
+
 def test_prepare_dataframe_transforms_columns():
     df = pd.DataFrame(
         [
@@ -197,8 +250,8 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
 
 
 def test_scrape_with_beautifulsoup_extracts_company_from_nested_json_ld_graph():
-        result = main_mod._scrape_with_beautifulsoup(
-                """
+    result = main_mod._scrape_with_beautifulsoup(
+        """
                 <html>
                     <head>
                         <script type="application/ld+json">
@@ -210,24 +263,24 @@ def test_scrape_with_beautifulsoup_extracts_company_from_nested_json_ld_graph():
                     <body><h1>Engineer</h1></body>
                 </html>
                 """,
-                {},
-        )
+        {},
+    )
 
-        assert result["company"] == "Acme"
+    assert result["company"] == "Acme"
 
 
 def test_scrape_with_beautifulsoup_extracts_company_from_object_json_ld_graph():
-        result = main_mod._scrape_with_beautifulsoup(
-                """
+    result = main_mod._scrape_with_beautifulsoup(
+        """
                 <script type="application/ld+json">
                     {"@graph":{"@type":"JobPosting",
                         "hiringOrganization":{"name":"Globex"}}}
                 </script>
                 """,
-                {},
-        )
+        {},
+    )
 
-        assert result["company"] == "Globex"
+    assert result["company"] == "Globex"
 
 
 def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
@@ -470,9 +523,9 @@ def test_pinned_network_backend_delegates_pinned_tcp_connection():
 
     backend.backend = cast(Any, FakeBackend())
 
-    assert cast(Any, backend).connect_tcp("example.com", 443, 2, "local", ["option"]) == (
-        "stream"
-    )
+    assert cast(Any, backend).connect_tcp(
+        "example.com", 443, 2, "local", ["option"]
+    ) == ("stream")
     assert calls == [("93.184.216.34", 443, 2, "local", ["option"])]
 
 
@@ -535,9 +588,7 @@ def test_scrape_url_accepts_hostname_with_public_dns(monkeypatch):
     monkeypatch.setattr(
         main_mod.socket,
         "getaddrinfo",
-        lambda *args, **kwargs: [
-            (10, 1, 6, "", ("2001:4860:4860::8888", 443, 0, 0))
-        ],
+        lambda *args, **kwargs: [(10, 1, 6, "", ("2001:4860:4860::8888", 443, 0, 0))],
     )
     monkeypatch.setattr(
         main_mod.httpx,
@@ -745,7 +796,11 @@ def test_run_create_retains_optional_fields_in_property_map(monkeypatch):
     monkeypatch.setattr(
         main_mod,
         "_scrape_url",
-        lambda url: {"url": url, "text": "Notes text", "description": "Description text"},
+        lambda url: {
+            "url": url,
+            "text": "Notes text",
+            "description": "Description text",
+        },
     )
     notion = FakeNotion()
 
@@ -801,9 +856,7 @@ def test_load_prop_name_map_accepts_file_in_working_directory(tmp_path, monkeypa
     assert main_mod._load_prop_name_map("./prop_map.json") == {"Company": "Firma"}
 
 
-@pytest.mark.parametrize(
-    "content", ["[]", '{"Company": 1}', '{"Company": ["Firma"]}']
-)
+@pytest.mark.parametrize("content", ["[]", '{"Company": 1}', '{"Company": ["Firma"]}'])
 def test_load_prop_name_map_rejects_non_string_object_maps(
     tmp_path, monkeypatch, content
 ):
