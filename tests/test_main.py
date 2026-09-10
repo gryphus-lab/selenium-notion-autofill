@@ -67,6 +67,21 @@ class FakeNotion:
         return "new-page-id"
 
 
+class AddressLookupNotion(FakeNotion):
+    def __init__(self, df, failing_filter_type=None):
+        super().__init__(df)
+        self.failing_filter_type = failing_filter_type
+
+    def get_database_data(self, database_id, filter=None):
+        self.calls.append((database_id, filter))
+        filter_type = next(
+            (key for key in ("rich_text", "title") if key in filter), None
+        )
+        if filter_type == self.failing_filter_type:
+            raise ValueError("invalid property type")
+        return self.df.copy()
+
+
 def _create_call(notion):
     """Return the create_page call tuple (3 elements) from FakeNotion.calls,
     ignoring any get_database_data lookups (2-element tuples) made first."""
@@ -202,6 +217,23 @@ def test_run_create_from_args_forwards_options(monkeypatch, dry_run):
             },
         )
     ]
+
+
+def test_existing_company_address_retries_with_title_and_matches_case_insensitively():
+    notion = AddressLookupNotion(
+        pd.DataFrame([{"Firma": "aCME", "Adresse": "Main Street 1"}]),
+        failing_filter_type="rich_text",
+    )
+
+    address = main_mod._existing_company_address(
+        notion,
+        "Acme",
+        {"Company": "Firma", "Address": "Adresse"},
+    )
+
+    assert address == "Main Street 1"
+    assert notion.calls[0][1]["rich_text"] == {"equals": "Acme"}
+    assert notion.calls[1][1]["title"] == {"equals": "Acme"}
 
 
 def test_prepare_dataframe_transforms_columns():

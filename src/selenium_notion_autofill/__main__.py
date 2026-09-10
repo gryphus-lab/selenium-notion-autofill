@@ -847,19 +847,31 @@ def _existing_company_address(
         return None
     company_prop = _actual_prop("Company", final_map)
     address_prop = _actual_prop(ADDRESS_FIELD, final_map)
-    try:
-        df = notion.get_database_data(
-            get_database_id(),
-            filter={"property": company_prop, "rich_text": {"equals": company}},
-        )
-    except Exception as exc:  # noqa: BLE001 - lookup is best-effort
-        print(f"   ⚠️  Could not look up existing address for {company}: {exc}")
+    filters = (
+        {"property": company_prop, "rich_text": {"equals": company}},
+        {"property": company_prop, "title": {"equals": company}},
+    )
+    df = None
+    for company_filter in filters:
+        try:
+            df = notion.get_database_data(get_database_id(), filter=company_filter)
+            break
+        except Exception as exc:  # noqa: BLE001 - lookup is best-effort
+            lookup_error = exc
+    if df is None:
+        print(f"   ⚠️  Could not look up existing address for {company}: {lookup_error}")
         return None
     if df is None or df.empty or address_prop not in df.columns:
         return None
-    for value in df[address_prop]:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    company_values = df[company_prop] if company_prop in df.columns else []
+    for company_value, address in zip(company_values, df[address_prop]):
+        if (
+            isinstance(company_value, str)
+            and company_value.strip().casefold() == company.strip().casefold()
+            and isinstance(address, str)
+            and address.strip()
+        ):
+            return address.strip()
     return None
 
 
