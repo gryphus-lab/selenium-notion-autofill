@@ -324,6 +324,7 @@ def _meta_content(soup, attrs: dict[str, str]) -> str | None:
 
 
 def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, str]:
+    """Extract job metadata into and return the supplied result mapping."""
     soup = BeautifulSoup(text, "html.parser")
     company = _extract_company_from_soup(soup)
     if company:
@@ -371,7 +372,7 @@ def _extract_company_from_soup(soup) -> str | None:
 
 
 def _extract_company_from_json_ld(soup) -> str | None:
-    """Extract an employer from JobPosting JSON-LD, including @graph nodes."""
+    """Return the first hiring organization in JSON-LD or its @graph nodes."""
     for script in soup.find_all("script", {"type": "application/ld+json"}):
         raw = script.string or script.get_text() or ""
         try:
@@ -385,6 +386,7 @@ def _extract_company_from_json_ld(soup) -> str | None:
 
 
 def _extract_company_from_json_ld_data(data) -> str | None:
+    """Return the first hiring organization name found in JSON-LD data."""
     if isinstance(data, list):
         for node in data:
             company = _extract_company_from_json_ld_data(node)
@@ -406,6 +408,7 @@ def _extract_company_from_json_ld_data(data) -> str | None:
 
 
 def _extract_company_from_json_ld_node(node) -> str | None:
+    """Return a node's hiring organization name, if present."""
     if not isinstance(node, dict):
         return None
     organization = node.get("hiringOrganization")
@@ -434,6 +437,7 @@ def _extract_company_from_selectors(soup) -> str | None:
 
 
 def _extract_company_from_site_name(soup) -> str | None:
+    """Return a non-job-board Open Graph site name, if present."""
     site_name = _meta_content(soup, {"property": "og:site_name"})
     if site_name and site_name.strip().lower() not in _JOB_BOARD_SITE_NAMES:
         return site_name.strip()
@@ -574,6 +578,7 @@ class _LimitedResponseStream(httpx.SyncByteStream):
 
 class _PinnedTransport(httpx.BaseTransport):
     def __init__(self, address: str, hostname: str):
+        """Initialize a transport pinned to an address and TLS hostname."""
         self.address = address
         self.hostname = hostname
         self.ssl_context = ssl.create_default_context(  # NOSONAR - secure TLS defaults
@@ -758,6 +763,7 @@ def _resolve_company_name(
     company_override: str | None,
     scraped_company: str | None = None,
 ) -> str:
+    """Resolve a company from an override, hostname mapping, scraped value, or host."""
     # 1) explicit override always wins
     if company_override:
         return company_override
@@ -781,6 +787,7 @@ _ALWAYS_KEEP_CREATE_FIELDS = ("Stage",)
 def _remove_unmapped_optional_properties(
     properties: dict[str, object], final_map: dict[str, str] | None
 ) -> None:
+    """Remove unconfigured optional properties in place, preserving required ones."""
     for field_name in OPTIONAL_CREATE_FIELDS:
         if field_name in _ALWAYS_KEEP_CREATE_FIELDS:
             continue
@@ -794,6 +801,7 @@ def _build_create_properties(
     company: str,
     title: str,
 ) -> dict[str, object]:
+    """Build canonical properties for a new application with an Applied stage."""
     today_iso = datetime.now(timezone.utc).date().isoformat()
     values = {
         "Company": company,
@@ -830,11 +838,10 @@ ADDRESS_FIELD = "Address"
 def _existing_company_address(
     notion, company: str, final_map: dict | None
 ) -> str | None:
-    """Return the Address of a prior entry for the same Company, if any.
+    """Return the first non-empty address for entries matching the company.
 
-    Queries the database for rows whose Company matches (case-insensitive) and
-    returns the first non-empty Address found. Returns None on no match, no
-    address, or any lookup failure (so creation proceeds with a blank address).
+    Property mappings are applied to the query and result column. Returns None
+    when the lookup cannot run, fails, has no matches, or finds no address.
     """
     if notion is None or not company or not company.strip():
         return None
@@ -859,7 +866,7 @@ def _existing_company_address(
 def _apply_existing_company_address(
     notion, properties: dict[str, object], company: str, final_map: dict | None
 ) -> None:
-    """Copy a known Company address onto the new entry, else leave it blank."""
+    """Add a known company address to properties in place when one is found."""
     address = _existing_company_address(notion, company, final_map)
     if address:
         properties[ADDRESS_FIELD] = address
@@ -867,6 +874,7 @@ def _apply_existing_company_address(
 
 
 def _actual_prop(canonical: str, final_map: dict | None) -> str:
+    """Return a mapped property name, falling back to its canonical name."""
     if isinstance(final_map, dict):
         return final_map.get(canonical, canonical)
     return canonical
@@ -935,11 +943,14 @@ def _run_create(
     company_override: str | None = None,
     role_override: str | None = None,
 ):
-    """Create a Notion page using the same property names the Selenium script expects.
+    """Create a Notion job-application page from metadata scraped from a URL.
 
-    The database field names must align with `FIELD_SELECTORS` keys, which are the
-    same names used by the rest of the automation. This keeps the new URL entry
-    feature consistent with the Job-Room autofill flow.
+    A dry run prints the mapped payload without making Notion API calls. For a
+    real creation, a known address for the resolved company is reused when
+    available.
+
+    Raises:
+        SystemExit: If the URL cannot be scraped safely, is blocked, or creation fails.
     """
     try:
         scraped = _scrape_url(url)
