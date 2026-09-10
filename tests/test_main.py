@@ -51,18 +51,22 @@ def _client_for_response(response, **kwargs):
 
 class FakeNotion:
     def __init__(self, df=None):
+        """Initialize the fake with optional database rows and an empty call log."""
         self.df = df if df is not None else pd.DataFrame()
         self.calls = []
 
     def get_database_data(self, database_id, filter=None):
+        """Record a database query and return a copy of the configured rows."""
         self.calls.append((database_id, filter))
         return self.df.copy()
 
     def update_row(self, page_id, properties):
+        """Record a successful page update."""
         self.calls.append((page_id, properties))
         return True
 
     def create_page(self, database_id, properties, prop_name_map=None):
+        """Record a page creation and return a synthetic page ID."""
         self.calls.append((database_id, properties, prop_name_map))
         return "new-page-id"
 
@@ -92,6 +96,7 @@ def _create_call(notion):
 
 
 def test_extract_formatted_field_and_monday_helpers():
+    """Exercise formatted-field parsing and Monday date calculation."""
     assert main_mod.extract_formatted_field("{'string': 'x'}") == "x"
     assert main_mod.extract_formatted_field("bad") == "bad"
 
@@ -121,6 +126,7 @@ class FakeDateTime(datetime):
 
 
 def test_get_month_and_rejected_filters_use_shared_dates(monkeypatch):
+    """Verify month and rejection filters share the calculated period."""
     monkeypatch.setattr(
         main_mod, "_get_open_period", lambda: ("2024-01-01", "2024-02-05")
     )
@@ -136,6 +142,7 @@ def test_get_month_and_rejected_filters_use_shared_dates(monkeypatch):
 
 
 def test_create_arg_parser_uses_expected_defaults():
+    """Verify the create parser's default option values."""
     args = main_mod._create_arg_parser().parse_args(["https://example.com/job"])
 
     assert args.url == "https://example.com/job"
@@ -146,6 +153,7 @@ def test_create_arg_parser_uses_expected_defaults():
 
 
 def test_create_arg_parser_parses_optional_arguments():
+    """Verify the create parser accepts every optional argument."""
     args = main_mod._create_arg_parser().parse_args(
         [
             "https://example.com/job",
@@ -167,6 +175,7 @@ def test_create_arg_parser_parses_optional_arguments():
 
 
 def test_run_create_from_args_requires_arguments(capsys):
+    """Verify create dispatch exits with usage when no URL is supplied."""
     with pytest.raises(SystemExit) as exc_info:
         main_mod._run_create_from_args(None, [])
 
@@ -176,6 +185,7 @@ def test_run_create_from_args_requires_arguments(capsys):
 
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_run_create_from_args_forwards_options(monkeypatch, dry_run):
+    """Verify create dispatch forwards parsed options and selects a client."""
     original_notion = object()
     created_notion = object()
     calls = []
@@ -237,6 +247,7 @@ def test_existing_company_address_retries_with_title_and_matches_case_insensitiv
 
 
 def test_prepare_dataframe_transforms_columns():
+    """Verify dataframe preparation normalizes fields and adds defaults."""
     df = pd.DataFrame(
         [
             {
@@ -258,6 +269,8 @@ def test_prepare_dataframe_transforms_columns():
 
 
 def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
+    """Verify URL scraping extracts the expected Beautiful Soup metadata."""
+
     class Response:
         status_code = 200
         text = (
@@ -282,6 +295,7 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
 
 
 def test_scrape_with_beautifulsoup_extracts_company_from_nested_json_ld_graph():
+    """Verify company extraction from a JobPosting in a JSON-LD graph list."""
     result = main_mod._scrape_with_beautifulsoup(
         """
                 <html>
@@ -302,6 +316,7 @@ def test_scrape_with_beautifulsoup_extracts_company_from_nested_json_ld_graph():
 
 
 def test_scrape_with_beautifulsoup_extracts_company_from_object_json_ld_graph():
+    """Verify company extraction from a JobPosting in a JSON-LD graph object."""
     result = main_mod._scrape_with_beautifulsoup(
         """
                 <script type="application/ld+json">
@@ -316,6 +331,8 @@ def test_scrape_with_beautifulsoup_extracts_company_from_object_json_ld_graph():
 
 
 def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
+    """Verify scraping falls back to regex while retaining OG metadata."""
+
     class Response:
         status_code = 200
         text = (
@@ -544,6 +561,7 @@ def test_scrape_url_uses_validated_dns_address(monkeypatch):
 
 
 def test_pinned_network_backend_delegates_pinned_tcp_connection():
+    """Verify the network backend uses the pinned IP for TCP connections."""
     backend = object.__new__(main_mod._PinnedNetworkBackend)
     backend.address = "93.184.216.34"
     calls = []
@@ -617,6 +635,7 @@ def test_log_scraped_values_bounds_page_text(capsys):
 
 
 def test_scrape_url_accepts_hostname_with_public_dns(monkeypatch):
+    """Verify scraping accepts a hostname that resolves to a public address."""
     monkeypatch.setattr(
         main_mod.socket,
         "getaddrinfo",
@@ -758,6 +777,7 @@ def test_limited_response_stream_rejects_oversized_stream_without_content_length
 
 
 def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
+    """Verify dry-run creation emits a mapped payload without Notion calls."""
     monkeypatch.setattr(
         main_mod,
         "_scrape_url",
@@ -797,6 +817,7 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
 
 
 def test_run_create_populates_zurich_fields(monkeypatch):
+    """Verify creation resolves Zurich and populates its expected fields."""
     monkeypatch.setattr(
         main_mod,
         "_scrape_url",
@@ -825,6 +846,7 @@ def test_run_create_populates_zurich_fields(monkeypatch):
 
 
 def test_run_create_retains_optional_fields_in_property_map(monkeypatch):
+    """Verify mapped optional fields remain in the create payload."""
     monkeypatch.setattr(
         main_mod,
         "_scrape_url",
@@ -881,6 +903,7 @@ def test_load_prop_name_map_rejects_path_outside_working_directory(
 
 
 def test_load_prop_name_map_accepts_file_in_working_directory(tmp_path, monkeypatch):
+    """Verify property maps can be loaded from the working directory."""
     monkeypatch.chdir(tmp_path)
     prop_map_path = tmp_path / "prop_map.json"
     prop_map_path.write_text('{"Company": "Firma"}', encoding="utf-8")
@@ -892,6 +915,7 @@ def test_load_prop_name_map_accepts_file_in_working_directory(tmp_path, monkeypa
 def test_load_prop_name_map_rejects_non_string_object_maps(
     tmp_path, monkeypatch, content
 ):
+    """Verify property-map files reject non-string keys or values."""
     monkeypatch.chdir(tmp_path)
     prop_map_path = tmp_path / "prop_map.json"
     prop_map_path.write_text(content, encoding="utf-8")
@@ -901,6 +925,7 @@ def test_load_prop_name_map_rejects_non_string_object_maps(
 
 
 def test_run_create_calls_notion_with_default_mapping(monkeypatch):
+    """Verify creation sends default-mapped properties to Notion."""
     monkeypatch.setattr(
         main_mod,
         "_scrape_url",
@@ -1171,6 +1196,7 @@ def test_run_update_rejections_with_exception_handling(monkeypatch):
 
     class ScreenshotFailingDriver(FakeDriver):
         def save_screenshot(self, path):
+            """Simulate a screenshot failure from the browser driver."""
             raise OSError("disk full")
 
     driver = ScreenshotFailingDriver()

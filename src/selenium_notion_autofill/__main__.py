@@ -446,6 +446,7 @@ def _extract_company_from_site_name(soup) -> str | None:
 
 class _HTMLFallbackExtractor(HTMLParser):
     def __init__(self) -> None:
+        """Initialize storage for fallback HTML metadata and visible text."""
         super().__init__(convert_charrefs=True)
         self.description: str | None = None
         self.skip_depth = 0
@@ -750,6 +751,7 @@ def _validate_resolved_addresses(hostname: str, port: int) -> str:
 
 
 def _source_from_url(url: str) -> str:
+    """Classify a job URL by its source hostname."""
     hostname = (urlparse(url).hostname or "").rstrip(".").lower()
     if hostname == "linkedin.com" or hostname.endswith(".linkedin.com"):
         return "LinkedIn"
@@ -893,6 +895,7 @@ def _actual_prop(canonical: str, final_map: dict | None) -> str:
 
 
 def _truncate_optional_text(value: object) -> str | None:
+    """Truncate non-empty text to Notion's rich-text limit."""
     if isinstance(value, str) and value:
         return value[:NOTION_RICH_TEXT_LIMIT]
     return None

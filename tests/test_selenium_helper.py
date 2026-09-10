@@ -48,6 +48,7 @@ def test_fill_text_calls_clear_and_send_keys():
 
 
 def test_fill_checkbox_and_radio_execute_script(monkeypatch):
+    """Verify selected checkbox and radio elements are clicked by script."""
     executed = []
 
     class Driver:
@@ -72,14 +73,17 @@ def test_fill_checkbox_and_radio_execute_script(monkeypatch):
 
 
 def test_fill_checkbox_and_radio_skip_unselected_elements():
+    """Verify hidden or false checkbox and radio values are skipped."""
     executed = []
 
     class Driver:
         def execute_script(self, script, element):
+            """Record an unexpected click script."""
             executed.append(script)
 
     class Elem:
         def is_displayed(self):
+            """Report that the test element is hidden."""
             return False
 
     element = Elem()
@@ -90,20 +94,24 @@ def test_fill_checkbox_and_radio_skip_unselected_elements():
 
 
 def test_get_notion_scalar_value_returns_original_for_malformed_literal():
+    """Verify malformed serialized values remain unchanged."""
     value = "{'type': 'string'"
 
     assert selenium_helper.get_notion_scalar_value(value) == value
 
 
 def test_fill_field_saves_screenshot_on_webdriver_error():
+    """Verify field failures capture a diagnostic screenshot."""
     screenshots = []
 
     class Wait:
         def until(self, condition):
+            """Simulate a timeout while resolving the field."""
             raise TimeoutException("missing")
 
     class Driver:
         def save_screenshot(self, path):
+            """Record the requested diagnostic screenshot path."""
             screenshots.append(path)
 
     selenium_helper.fill_field(Driver(), Wait(), "Role", "input.role", "Engineer")
@@ -112,6 +120,7 @@ def test_fill_field_saves_screenshot_on_webdriver_error():
 
 
 def test_fill_field_type_unknown_returns_none():
+    """Verify unknown application types are skipped."""
     # When Type resolves to None, fill_field should return early
     result = selenium_helper.fill_field(
         None, None, "Type", "selector", "unknown", row={}
@@ -686,10 +695,12 @@ def test_set_status_rejected_uses_fallback_xpath(monkeypatch):
 
     class Driver:
         def execute_script(self, script, elem):
+            """Record the script used to click the rejection status."""
             script_calls.append(script)
 
     class Entry:
         def find_element(self, by, selector):
+            """Fail the primary selector before returning the fallback element."""
             find_calls.append((by, selector))
             if len(find_calls) == 1:
                 raise selenium_helper.NoSuchElementException("Not found")
@@ -739,6 +750,8 @@ def test_matches_role_empty_role_always_matches():
 
 
 def test_matches_role_checks_first_word_of_role():
+    """Verify role matching compares the first role word with entry text."""
+
     class Entry:
         text = "Acme Corp Senior Developer"
 

@@ -244,6 +244,7 @@ def test_restore_storage_with_empty_storage(tmp_path, monkeypatch):
 def test_is_session_from_today_returns_false_for_invalid_metadata(
     tmp_path, monkeypatch
 ):
+    """Verify malformed session metadata is treated as stale."""
     info_file = tmp_path / "session_info.json"
     info_file.write_text("not json")
     monkeypatch.setattr(session_helper, "SESSION_INFO_FILE", str(info_file))
@@ -252,6 +253,7 @@ def test_is_session_from_today_returns_false_for_invalid_metadata(
 
 
 def test_save_session_handles_storage_webdriver_error(tmp_path, monkeypatch):
+    """Verify session saving tolerates unavailable browser storage."""
     cookies_file = tmp_path / "cookies.json"
     storage_file = tmp_path / "storage.json"
     info_file = tmp_path / "session_info.json"
@@ -261,6 +263,7 @@ def test_save_session_handles_storage_webdriver_error(tmp_path, monkeypatch):
 
     class Driver(DummyDriver):
         def execute_script(self, script, *args):
+            """Simulate browser storage being unavailable."""
             raise WebDriverException("storage unavailable")
 
     session_helper.save_session(Driver())
@@ -270,14 +273,18 @@ def test_save_session_handles_storage_webdriver_error(tmp_path, monkeypatch):
 
 
 def test_apply_cookies_ignores_webdriver_errors():
+    """Verify a rejected cookie does not abort session restoration."""
+
     class Driver:
         def add_cookie(self, cookie):
+            """Simulate the browser rejecting a cookie."""
             raise WebDriverException("cookie rejected")
 
     session_helper._apply_cookies(Driver(), [{"name": "x", "value": "y"}])
 
 
 def test_load_session_returns_false_for_invalid_cookie_json(tmp_path, monkeypatch):
+    """Verify malformed cookie JSON prevents session restoration."""
     cookies_file = tmp_path / "cookies.json"
     cookies_file.write_text("not json")
     monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
