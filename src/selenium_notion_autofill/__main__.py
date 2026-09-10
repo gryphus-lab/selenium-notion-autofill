@@ -66,6 +66,8 @@ OPTIONAL_CREATE_FIELDS = (
 HOSTNAME_COMPANY_MAP = {
     r"(?:^|\.)careers\.zurich\.com$": "Zurich Insurance",
 }
+# og:site_name values that are the job board itself, not the employer.
+_JOB_BOARD_SITE_NAMES = {"linkedin", "indeed", "jobs", "xing", "glassdoor"}
 
 
 class _DocumentTooLargeError(RuntimeError):
@@ -340,10 +342,59 @@ def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, s
     if description:
         result["description"] = description
 
+    company = _extract_company_from_soup(soup)
+    if company:
+        result["company"] = company
+
     h1 = soup.find("h1")
     if h1:
         result["h1"] = h1.get_text(strip=True)
     return result
+
+
+def _extract_company_from_soup(soup) -> str | None:
+    """Best-effort employer/company name from a job-posting page.
+
+    Priority: JSON-LD JobPosting hiringOrganization → LinkedIn/Indeed company
+    anchors → og:site_name (unless it's the job board itself). Returns None if
+    nothing reliable is found, so callers can fall back to the hostname map.
+    """
+    # 1) schema.org JobPosting JSON-LD (LinkedIn, many ATS pages embed this)
+    for script in soup.find_all("script", {"type": "application/ld+json"}):
+        raw = script.string or script.get_text() or ""
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        for node in data if isinstance(data, list) else [data]:
+            if not isinstance(node, dict):
+                continue
+            org = node.get("hiringOrganization")
+            if isinstance(org, dict) and org.get("name"):
+                return str(org["name"]).strip()
+            if isinstance(org, str) and org.strip():
+                return org.strip()
+
+    # 2) LinkedIn job-posting company link / Indeed company name element
+    selectors = [
+        ("a", {"class": re.compile(r"topcard__org-name-link|company")}),
+        (None, {"class": re.compile(r"topcard__flavor")}),
+        (None, {"data-testid": re.compile(r"company-name|inlineHeader-companyName")}),
+        (None, {"class": re.compile(r"jobsearch-CompanyInfoContainer")}),
+    ]
+    for tag_name, attrs in selectors:
+        element = soup.find(tag_name, attrs) if tag_name else soup.find(attrs=attrs)
+        if element:
+            name = element.get_text(strip=True)
+            if name:
+                return name
+
+    # 3) og:site_name — only if it isn't the job board itself
+    site_name = _meta_content(soup, {"property": "og:site_name"})
+    if site_name and site_name.strip().lower() not in _JOB_BOARD_SITE_NAMES:
+        return site_name.strip()
+
+    return None
 
 
 class _HTMLFallbackExtractor(HTMLParser):
@@ -657,20 +708,37 @@ def _source_from_url(url: str) -> str:
     return "Company site"
 
 
-def _resolve_company_name(company: str, company_override: str | None) -> str:
+def _resolve_company_name(
+    hostname: str,
+    company_override: str | None,
+    scraped_company: str | None = None,
+) -> str:
+    # 1) explicit override always wins
     if company_override:
         return company_override
-    normalized_company = company.rstrip(".").lower()
+    # 2) known hostname → company mapping (e.g. career portals)
+    normalized_company = hostname.rstrip(".").lower()
     for hostname_pattern, company_name in HOSTNAME_COMPANY_MAP.items():
         if re.search(hostname_pattern, normalized_company):
             return company_name
-    return company
+    # 3) company scraped from the page (JobPosting/og:site_name/company element)
+    if scraped_company and scraped_company.strip():
+        return scraped_company.strip()
+    # 4) last resort: the hostname (previous behaviour)
+    return hostname
+
+
+# Fields that must always be present on a newly created entry, regardless of
+# whether they appear in FIELD_SELECTORS or the property map.
+_ALWAYS_KEEP_CREATE_FIELDS = ("Stage",)
 
 
 def _remove_unmapped_optional_properties(
     properties: dict[str, object], final_map: dict[str, str] | None
 ) -> None:
     for field_name in OPTIONAL_CREATE_FIELDS:
+        if field_name in _ALWAYS_KEEP_CREATE_FIELDS:
+            continue
         if field_name not in FIELD_SELECTORS and field_name not in (final_map or {}):
             properties.pop(field_name, None)
 
@@ -706,7 +774,55 @@ def _build_create_properties(
         )
         if field_name in values
     }
+    # New applications always start at Stage "Applied".
+    properties["Stage"] = "Applied"
     return properties
+
+
+ADDRESS_FIELD = "Address"
+
+
+def _existing_company_address(notion, company: str, final_map: dict | None) -> str | None:
+    """Return the Address of a prior entry for the same Company, if any.
+
+    Queries the database for rows whose Company matches (case-insensitive) and
+    returns the first non-empty Address found. Returns None on no match, no
+    address, or any lookup failure (so creation proceeds with a blank address).
+    """
+    if notion is None or not company or not company.strip():
+        return None
+    company_prop = _actual_prop("Company", final_map)
+    address_prop = _actual_prop(ADDRESS_FIELD, final_map)
+    try:
+        df = notion.get_database_data(
+            get_database_id(),
+            filter={"property": company_prop, "rich_text": {"equals": company}},
+        )
+    except Exception as exc:  # noqa: BLE001 - lookup is best-effort
+        print(f"   ⚠️  Could not look up existing address for {company}: {exc}")
+        return None
+    if df is None or df.empty or address_prop not in df.columns:
+        return None
+    for value in df[address_prop]:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _apply_existing_company_address(
+    notion, properties: dict[str, object], company: str, final_map: dict | None
+) -> None:
+    """Copy a known Company address onto the new entry, else leave it blank."""
+    address = _existing_company_address(notion, company, final_map)
+    if address:
+        properties[ADDRESS_FIELD] = address
+        print(f"   📍 Reused address for {company}: {address}")
+
+
+def _actual_prop(canonical: str, final_map: dict | None) -> str:
+    if isinstance(final_map, dict):
+        return final_map.get(canonical, canonical)
+    return canonical
 
 
 def _truncate_optional_text(value: object) -> str | None:
@@ -795,9 +911,12 @@ def _run_create(
     hostname = parsed.hostname or parsed.netloc or url
 
     title = role_override or scraped.get("h1") or scraped.get("title") or hostname
-    company = _resolve_company_name(hostname, company_override)
+    company = _resolve_company_name(
+        hostname, company_override, scraped.get("company")
+    )
     properties = _build_create_properties(url, scraped, company, title)
     _remove_unmapped_optional_properties(properties, final_map)
+    _apply_existing_company_address(notion, properties, company, final_map)
 
     _log_prepared_properties(properties)
 
