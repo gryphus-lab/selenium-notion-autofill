@@ -214,6 +214,9 @@ def test_apply_cookies_keeps_important_attributes(monkeypatch):
     added_cookie = driver.added[0]
     assert added_cookie["name"] == "test"
     assert added_cookie["value"] == "val"
+    assert added_cookie["domain"] == "example.com"
+    assert added_cookie["path"] == "/"
+    assert added_cookie["secure"] is True
     assert "sameSite" not in added_cookie
 
 

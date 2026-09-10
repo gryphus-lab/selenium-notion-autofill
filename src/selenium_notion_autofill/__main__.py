@@ -325,6 +325,10 @@ def _meta_content(soup, attrs: dict[str, str]) -> str | None:
 
 def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, str]:
     soup = BeautifulSoup(text, "html.parser")
+    company = _extract_company_from_soup(soup)
+    if company:
+        result["company"] = company
+
     for element in soup(["script", "style", "noscript"]):
         element.decompose()
 
@@ -342,10 +346,6 @@ def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, s
     if description:
         result["description"] = description
 
-    company = _extract_company_from_soup(soup)
-    if company:
-        result["company"] = company
-
     h1 = soup.find("h1")
     if h1:
         result["h1"] = h1.get_text(strip=True)
@@ -359,23 +359,68 @@ def _extract_company_from_soup(soup) -> str | None:
     anchors → og:site_name (unless it's the job board itself). Returns None if
     nothing reliable is found, so callers can fall back to the hostname map.
     """
-    # 1) schema.org JobPosting JSON-LD (LinkedIn, many ATS pages embed this)
+    company = _extract_company_from_json_ld(soup)
+    if company:
+        return company
+
+    company = _extract_company_from_selectors(soup)
+    if company:
+        return company
+
+    site_name = _meta_content(soup, {"property": "og:site_name"})
+    if site_name and site_name.strip().lower() not in _JOB_BOARD_SITE_NAMES:
+        return site_name.strip()
+    return None
+
+
+def _extract_company_from_json_ld(soup) -> str | None:
+    """Extract an employer from JobPosting JSON-LD, including @graph nodes."""
     for script in soup.find_all("script", {"type": "application/ld+json"}):
         raw = script.string or script.get_text() or ""
         try:
             data = json.loads(raw)
         except (ValueError, TypeError):
             continue
-        for node in data if isinstance(data, list) else [data]:
-            if not isinstance(node, dict):
-                continue
-            org = node.get("hiringOrganization")
-            if isinstance(org, dict) and org.get("name"):
-                return str(org["name"]).strip()
-            if isinstance(org, str) and org.strip():
-                return org.strip()
+        company = _extract_company_from_json_ld_data(data)
+        if company:
+            return company
+    return None
 
-    # 2) LinkedIn job-posting company link / Indeed company name element
+
+def _extract_company_from_json_ld_data(data) -> str | None:
+    if isinstance(data, list):
+        for node in data:
+            company = _extract_company_from_json_ld_data(node)
+            if company:
+                return company
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    company = _extract_company_from_json_ld_node(data)
+    if company:
+        return company
+
+    graph = data.get("@graph")
+    if isinstance(graph, (dict, list)):
+        return _extract_company_from_json_ld_data(graph)
+    return None
+
+
+def _extract_company_from_json_ld_node(node) -> str | None:
+    if not isinstance(node, dict):
+        return None
+    organization = node.get("hiringOrganization")
+    if isinstance(organization, dict) and organization.get("name"):
+        return str(organization["name"]).strip()
+    if isinstance(organization, str) and organization.strip():
+        return organization.strip()
+    return None
+
+
+def _extract_company_from_selectors(soup) -> str | None:
+    """Extract an employer from common LinkedIn and Indeed page elements."""
     selectors = [
         ("a", {"class": re.compile(r"topcard__org-name-link|company")}),
         (None, {"class": re.compile(r"topcard__flavor")}),
@@ -388,12 +433,6 @@ def _extract_company_from_soup(soup) -> str | None:
             name = element.get_text(strip=True)
             if name:
                 return name
-
-    # 3) og:site_name — only if it isn't the job board itself
-    site_name = _meta_content(soup, {"property": "og:site_name"})
-    if site_name and site_name.strip().lower() not in _JOB_BOARD_SITE_NAMES:
-        return site_name.strip()
-
     return None
 
 
@@ -533,7 +572,9 @@ class _PinnedTransport(httpx.BaseTransport):
     def __init__(self, address: str, hostname: str):
         self.address = address
         self.hostname = hostname
-        self.ssl_context = ssl.create_default_context()
+        self.ssl_context = ssl.create_default_context(  # NOSONAR - secure TLS defaults
+            purpose=ssl.Purpose.SERVER_AUTH
+        )
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
         self.ssl_context.check_hostname = True
         self.ssl_context.verify_mode = ssl.CERT_REQUIRED

@@ -547,6 +547,7 @@ def test_resolve_type_selector_dict_with_string():
     result = selenium_helper.resolve_type_selector(
         {"type": "string", "string": "vorstellungsgespräch"}
     )
+    assert result is not None
     assert "Vorstellungsgespräch" in result
 
 
@@ -641,6 +642,7 @@ def test_set_status_rejected_uses_fallback_xpath(monkeypatch):
     monkeypatch.setattr(selenium_helper.time, "sleep", lambda *_: None)
 
     script_calls = []
+    find_calls = []
 
     class Driver:
         def execute_script(self, script, elem):
@@ -648,11 +650,22 @@ def test_set_status_rejected_uses_fallback_xpath(monkeypatch):
 
     class Entry:
         def find_element(self, by, selector):
-            raise selenium_helper.NoSuchElementException("Not found")
+            find_calls.append((by, selector))
+            if len(find_calls) == 1:
+                raise selenium_helper.NoSuchElementException("Not found")
+            return SimpleNamespace()
 
     driver = Driver()
     result = selenium_helper._set_status_rejected(driver, Entry())
-    assert result is False
+    assert result is True
+    assert find_calls == [
+        (selenium_helper.By.CSS_SELECTOR, "label[for$='-REJECTED']"),
+        (
+            selenium_helper.By.XPATH,
+            ".//label[contains(text(), 'Absage')]",
+        ),
+    ]
+    assert script_calls
 
 
 def test_set_status_rejected_returns_true_on_success(monkeypatch):
@@ -689,8 +702,8 @@ def test_matches_role_checks_first_word_of_role():
     class Entry:
         text = "Acme Corp Senior Developer"
 
-    assert selenium_helper._matches_role(Entry(), "Developer") is True
-    assert selenium_helper._matches_role(Entry(), "Manager") is False
+    assert selenium_helper._matches_role(Entry(), "Developer Backend") is True
+    assert selenium_helper._matches_role(Entry(), "Manager Backend") is False
 
 
 def test_find_entry_by_company_requires_matching_role():

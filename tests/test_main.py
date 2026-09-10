@@ -165,6 +165,40 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
     }
 
 
+def test_scrape_with_beautifulsoup_extracts_company_from_nested_json_ld_graph():
+        result = main_mod._scrape_with_beautifulsoup(
+                """
+                <html>
+                    <head>
+                        <script type="application/ld+json">
+                            {"@context":"https://schema.org","@graph":[
+                                {"@type":"JobPosting","hiringOrganization":{"name":"Acme"}}
+                            ]}
+                        </script>
+                    </head>
+                    <body><h1>Engineer</h1></body>
+                </html>
+                """,
+                {},
+        )
+
+        assert result["company"] == "Acme"
+
+
+def test_scrape_with_beautifulsoup_extracts_company_from_object_json_ld_graph():
+        result = main_mod._scrape_with_beautifulsoup(
+                """
+                <script type="application/ld+json">
+                    {"@graph":{"@type":"JobPosting",
+                        "hiringOrganization":{"name":"Globex"}}}
+                </script>
+                """,
+                {},
+        )
+
+        assert result["company"] == "Globex"
+
+
 def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
     class Response:
         status_code = 200
@@ -931,10 +965,11 @@ def test_create_driver_no_chromedriver_found(monkeypatch):
 
 
 def test_prepare_dataframe_with_missing_columns():
-    """Test prepare_dataframe when Date and Type columns are missing."""
+    """Test prepare_dataframe when Type is missing and Date is empty."""
     df = pd.DataFrame(
         [
             {
+                "Date": None,
                 "PLZ_Ort": "12345 Bern",
                 "Company": "Test Corp",
             }
@@ -944,8 +979,10 @@ def test_prepare_dataframe_with_missing_columns():
     main_mod.prepare_dataframe(df)
 
     assert df["PLZ_Ort"].iloc[0] == "1234"
+    assert pd.isna(df["Date"].iloc[0])
     assert df["RAV"].iloc[0] == "false"
-    assert "Date" not in df.columns or pd.isna(df["Date"].iloc[0])
+    assert df["Arbeitspensum"].iloc[0] == "false"
+    assert df["Status"].iloc[0] == "false"
 
 
 def test_get_open_period_december_to_january(monkeypatch):
@@ -1016,7 +1053,11 @@ def test_run_update_rejections_with_exception_handling(monkeypatch):
     )
     notion = FakeNotion(df)
 
-    driver = FakeDriver()
+    class ScreenshotFailingDriver(FakeDriver):
+        def save_screenshot(self, path):
+            raise OSError("disk full")
+
+    driver = ScreenshotFailingDriver()
     wait = FakeWait(driver, 1)
 
     monkeypatch.setattr(main_mod, "get_rejected_filter", lambda: {"filter": "rejected"})
