@@ -67,28 +67,34 @@ class FakeNotion:
         return "new-page-id"
 
 
-class AddressLookupNotion(FakeNotion):
-    def __init__(self, df, failing_filter_type=None):
-        super().__init__(df)
-        self.failing_filter_type = failing_filter_type
-
-    def get_database_data(self, database_id, filter=None):
-        self.calls.append((database_id, filter))
-        filter_type = next(
-            (key for key in ("rich_text", "title") if key in filter), None
-        )
-        if filter_type == self.failing_filter_type:
-            raise ValueError("invalid property type")
-        return self.df.copy()
-
-
 def _create_call(notion):
-    """Return the create_page call tuple (3 elements) from FakeNotion.calls,
-    ignoring any get_database_data lookups (2-element tuples) made first."""
+    """Return the create_page call from FakeNotion.calls, ignoring lookups."""
     for call in notion.calls:
         if len(call) == 3:
             return call
     raise AssertionError("create_page was not called")
+
+
+@pytest.mark.parametrize(
+    ("company_prop", "filter_type"),
+    [("Firma", "rich_text"), ("Name", "title"), ("Title", "title")],
+)
+def test_existing_company_address_uses_matching_text_filter(company_prop, filter_type):
+    notion = FakeNotion(pd.DataFrame({"Adresse": ["Main Street 1"]}))
+
+    address = main_mod._existing_company_address(
+        notion,
+        "Acme",
+        {"Company": company_prop, "Address": "Adresse"},
+    )
+
+    assert address == "Main Street 1"
+    assert notion.calls == [
+        (
+            main_mod.get_database_id(),
+            {"property": company_prop, filter_type: {"equals": "Acme"}},
+        )
+    ]
 
 
 def test_extract_formatted_field_and_monday_helpers():
@@ -136,6 +142,7 @@ def test_get_month_and_rejected_filters_use_shared_dates(monkeypatch):
 
 
 def test_create_arg_parser_uses_expected_defaults():
+    """Test that create argument parser defaults are correct."""
     args = main_mod._create_arg_parser().parse_args(["https://example.com/job"])
 
     assert args.url == "https://example.com/job"
@@ -146,6 +153,7 @@ def test_create_arg_parser_uses_expected_defaults():
 
 
 def test_create_arg_parser_parses_optional_arguments():
+    """Test that create argument parser handles all optional flags."""
     args = main_mod._create_arg_parser().parse_args(
         [
             "https://example.com/job",
@@ -167,6 +175,7 @@ def test_create_arg_parser_parses_optional_arguments():
 
 
 def test_run_create_from_args_requires_arguments(capsys):
+    """Test that run_create_from_args exits when no arguments are provided."""
     with pytest.raises(SystemExit) as exc_info:
         main_mod._run_create_from_args(None, [])
 
@@ -176,6 +185,7 @@ def test_run_create_from_args_requires_arguments(capsys):
 
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_run_create_from_args_forwards_options(monkeypatch, dry_run):
+    """Test that run_create_from_args correctly forwards parsed options."""
     original_notion = object()
     created_notion = object()
     calls = []
@@ -217,23 +227,6 @@ def test_run_create_from_args_forwards_options(monkeypatch, dry_run):
             },
         )
     ]
-
-
-def test_existing_company_address_retries_with_title_and_matches_case_insensitively():
-    notion = AddressLookupNotion(
-        pd.DataFrame([{"Firma": "aCME", "Adresse": "Main Street 1"}]),
-        failing_filter_type="rich_text",
-    )
-
-    address = main_mod._existing_company_address(
-        notion,
-        "Acme",
-        {"Company": "Firma", "Address": "Adresse"},
-    )
-
-    assert address == "Main Street 1"
-    assert notion.calls[0][1]["rich_text"] == {"equals": "Acme"}
-    assert notion.calls[1][1]["title"] == {"equals": "Acme"}
 
 
 def test_prepare_dataframe_transforms_columns():
@@ -282,6 +275,7 @@ def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
 
 
 def test_scrape_with_beautifulsoup_extracts_company_from_nested_json_ld_graph():
+    """Test that company extraction handles nested JSON-LD graph arrays."""
     result = main_mod._scrape_with_beautifulsoup(
         """
                 <html>
@@ -302,6 +296,7 @@ def test_scrape_with_beautifulsoup_extracts_company_from_nested_json_ld_graph():
 
 
 def test_scrape_with_beautifulsoup_extracts_company_from_object_json_ld_graph():
+    """Test that company extraction handles JSON-LD graph objects."""
     result = main_mod._scrape_with_beautifulsoup(
         """
                 <script type="application/ld+json">

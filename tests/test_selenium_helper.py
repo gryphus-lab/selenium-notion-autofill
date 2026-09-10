@@ -72,6 +72,7 @@ def test_fill_checkbox_and_radio_execute_script(monkeypatch):
 
 
 def test_fill_checkbox_and_radio_skip_unselected_elements():
+    """Test that checkbox and radio filling skips hidden elements."""
     executed = []
 
     class Driver:
@@ -90,12 +91,14 @@ def test_fill_checkbox_and_radio_skip_unselected_elements():
 
 
 def test_get_notion_scalar_value_returns_original_for_malformed_literal():
+    """Test that malformed literal strings are returned unchanged."""
     value = "{'type': 'string'"
 
     assert selenium_helper.get_notion_scalar_value(value) == value
 
 
 def test_fill_field_saves_screenshot_on_webdriver_error():
+    """Test that fill_field saves a screenshot when a timeout occurs."""
     screenshots = []
 
     class Wait:
