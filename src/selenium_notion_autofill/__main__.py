@@ -782,7 +782,9 @@ def _build_create_properties(
 ADDRESS_FIELD = "Address"
 
 
-def _existing_company_address(notion, company: str, final_map: dict | None) -> str | None:
+def _existing_company_address(
+    notion, company: str, final_map: dict | None
+) -> str | None:
     """Return the Address of a prior entry for the same Company, if any.
 
     Queries the database for rows whose Company matches (case-insensitive) and
@@ -911,12 +913,13 @@ def _run_create(
     hostname = parsed.hostname or parsed.netloc or url
 
     title = role_override or scraped.get("h1") or scraped.get("title") or hostname
-    company = _resolve_company_name(
-        hostname, company_override, scraped.get("company")
-    )
+    company = _resolve_company_name(hostname, company_override, scraped.get("company"))
     properties = _build_create_properties(url, scraped, company, title)
     _remove_unmapped_optional_properties(properties, final_map)
-    _apply_existing_company_address(notion, properties, company, final_map)
+    # Dry-run must not touch the Notion API; only look up a reusable address for
+    # a real create.
+    if not dry_run:
+        _apply_existing_company_address(notion, properties, company, final_map)
 
     _log_prepared_properties(properties)
 

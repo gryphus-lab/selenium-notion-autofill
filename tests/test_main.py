@@ -636,7 +636,8 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert "📝 Values prepared for Notion:" in output
     assert "   Company: [length=4, preview=Acme]" in output
     assert "   Role: [length=9, preview=Developer]" in output
-    assert "   Stage: Applied" in output
+    assert "   Stage: [length=7, preview=Applied]" in output
+    assert "'Stage': {'status': {'name': 'Applied'}}" in output
     assert "   Source:" not in output
     assert "   Notes:" not in output
     assert "   Last Update Date:" not in output
