@@ -1,8 +1,11 @@
 import builtins
 from datetime import datetime, timezone
+from typing import Any, cast
 
 import pandas as pd
 import pytest
+import httpcore
+import httpx
 
 from selenium_notion_autofill import __main__ as main_mod
 
@@ -29,6 +32,23 @@ class FakeWait:
         self.timeout = timeout
 
 
+def _client_for_response(response, **kwargs):
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            return response
+
+    return FakeClient(**kwargs)
+
+
 class FakeNotion:
     def __init__(self, df=None):
         self.df = df if df is not None else pd.DataFrame()
@@ -41,6 +61,10 @@ class FakeNotion:
     def update_row(self, page_id, properties):
         self.calls.append((page_id, properties))
         return True
+
+    def create_page(self, database_id, properties, prop_name_map=None):
+        self.calls.append((database_id, properties, prop_name_map))
+        return "new-page-id"
 
 
 def test_extract_formatted_field_and_monday_helpers():
@@ -106,6 +130,640 @@ def test_prepare_dataframe_transforms_columns():
     assert df["RAV"].iloc[0] == "false"
     assert df["Arbeitspensum"].iloc[0] == "false"
     assert df["Status"].iloc[0] == "false"
+
+
+def test_scrape_url_extracts_metadata_with_beautifulsoup(monkeypatch):
+    class Response:
+        status_code = 200
+        text = (
+            "<html><title>Engineer</title>"
+            '<meta name="description" content="Build systems">'
+            "<h1>Senior Engineer</h1></html>"
+        )
+
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/1")
+
+    assert result == {
+        "url": "https://93.184.216.34/jobs/1",
+        "title": "Engineer",
+        "description": "Build systems",
+        "h1": "Senior Engineer",
+        "text": "Engineer\nSenior Engineer",
+    }
+
+
+def test_scrape_url_uses_og_description_and_regex_fallback(monkeypatch):
+    class Response:
+        status_code = 200
+        text = (
+            "<html><title>Engineer</title>"
+            '<meta property="og:description" content="Ship products">'
+            "<h1>Platform Engineer</h1></html>"
+        )
+
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "BeautifulSoup",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("parser error")),
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/2")
+
+    assert result["title"] == "Engineer"
+    assert result["description"] == "Ship products"
+    assert result["h1"] == "Platform Engineer"
+
+
+def test_regex_page_text_excludes_noscript_content():
+    result = main_mod._scrape_with_regex(
+        "<html><body><noscript>secret</noscript><p>Visible job</p></body></html>",
+        {"url": "https://93.184.216.34/jobs/1"},
+    )
+
+    assert result["text"] == "Visible job"
+
+
+def test_scrape_url_allows_captcha_in_valid_description(monkeypatch):
+    class Response:
+        status_code = 200
+        text = (
+            "<html><title>Engineer</title><h1>Engineer</h1>"
+            "<p>CAPTCHA training.</p></html>"
+        )
+
+    monkeypatch.setattr(
+        main_mod.httpx,
+        "Client",
+        lambda **kwargs: _client_for_response(Response()),
+    )
+
+    assert "blocked" not in main_mod._scrape_url("https://93.184.216.34/jobs/1")
+
+
+def test_scrape_url_marks_blocking_body_text(monkeypatch):
+    class Response:
+        status_code = 200
+        text = (
+            "<html><title>Engineer</title><h1>Engineer</h1>"
+            "<body>Access Denied</body></html>"
+        )
+
+    monkeypatch.setattr(
+        main_mod.httpx,
+        "Client",
+        lambda **kwargs: _client_for_response(Response()),
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked-body")
+
+    assert result["blocked"] == "The website returned an access-blocked page"
+
+
+def test_scrape_url_marks_access_blocked_pages(monkeypatch):
+    class Response:
+        status_code = 403
+        text = "<html><title>Blocked - Indeed.com</title><h1>Access Denied</h1></html>"
+
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked")
+
+    assert result["blocked"] == "The website returned an access-blocked page"
+
+
+def test_scrape_url_marks_403_and_429_blocked_regardless_of_content(monkeypatch):
+    """403 and 429 status codes should always be marked as blocked, even if
+    the response content doesn't contain blocking markers."""
+
+    # Test 403 with normal-looking content
+    class Response403:
+        status_code = 403
+        text = "<html><title>Job Opening</title><h1>Software Engineer</h1></html>"
+
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response403())
+    )
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/1")
+    assert result["blocked"] == "The website returned an access-blocked page"
+
+    # Test 429 with normal-looking content
+    class Response429:
+        status_code = 429
+        text = "<html><title>Job Opening</title><h1>Software Engineer</h1></html>"
+
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response429())
+    )
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/2")
+    assert result["blocked"] == "The website returned an access-blocked page"
+
+
+def test_run_create_does_not_create_page_for_blocked_scrape(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {"url": url, "title": "Access Denied", "blocked": "blocked"},
+    )
+    notion = FakeNotion()
+
+    with pytest.raises(SystemExit):
+        main_mod._run_create(notion, "https://93.184.216.34/jobs/blocked")
+
+    output = capsys.readouterr().out
+    assert "Notion entry was not created: blocked" in output
+    assert notion.calls == []
+
+
+def test_scrape_url_returns_url_when_fetch_fails(monkeypatch):
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            raise RuntimeError("network unavailable")
+
+    def fake_client_for_network_error(**kwargs):
+        return FakeClient()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", fake_client_for_network_error)
+
+    assert main_mod._scrape_url("https://93.184.216.34/jobs/3") == {
+        "url": "https://93.184.216.34/jobs/3",
+        "blocked": "The URL could not be fetched: network unavailable",
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8080/",
+        "http://[::1]/",
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",
+        "https://user:password@example.com/",
+    ],
+)
+def test_scrape_url_rejects_ssrf_targets(url, monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("network request should not be made")
+
+    monkeypatch.setattr(main_mod.httpx, "Client", fail_if_called)
+
+    with pytest.raises(ValueError):
+        main_mod._scrape_url(url)
+
+
+def test_scrape_url_disables_redirects(monkeypatch):
+    calls = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            calls.append(url)
+            return Response()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
+
+    main_mod._scrape_url("https://93.184.216.34/jobs/4")
+
+    assert calls[1] == "https://93.184.216.34/jobs/4"
+    assert calls[0]["follow_redirects"] is False
+    assert calls[0]["trust_env"] is False
+
+
+def test_scrape_url_uses_validated_dns_address(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        main_mod.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs["transport"].address)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            return type("Response", (), {"status_code": 200, "text": ""})()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
+
+    main_mod._scrape_url("https://example.com/job")
+
+    assert calls == ["93.184.216.34"]
+
+
+def test_pinned_network_backend_delegates_pinned_tcp_connection():
+    backend = object.__new__(main_mod._PinnedNetworkBackend)
+    backend.address = "93.184.216.34"
+    calls = []
+
+    class FakeBackend:
+        def connect_tcp(self, *args):
+            calls.append(args)
+            return "stream"
+
+    backend.backend = cast(Any, FakeBackend())
+
+    assert cast(Any, backend).connect_tcp("example.com", 443, 2, "local", ["option"]) == (
+        "stream"
+    )
+    assert calls == [("93.184.216.34", 443, 2, "local", ["option"])]
+
+
+def test_scrape_url_pins_to_validated_address_preventing_dns_rebinding(monkeypatch):
+    """Regression test: ensure the request uses the validated public IP even if
+    DNS would later resolve to a private address (DNS rebinding attack)."""
+    resolve_calls = []
+
+    def resolve_once_public_then_private(*args, **kwargs):
+        hostname = args[0]
+        resolve_calls.append(hostname)
+        if len(resolve_calls) == 1:
+            # First call during validation: return public IP
+            return [(2, 1, 6, "", ("93.184.216.34", 443))]
+        else:
+            # Hypothetical second call (should not happen): return private IP
+            return [(2, 1, 6, "", ("127.0.0.1", 443))]
+
+    monkeypatch.setattr(
+        main_mod.socket, "getaddrinfo", resolve_once_public_then_private
+    )
+
+    connected_address = None
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            nonlocal connected_address
+            connected_address = kwargs["transport"].address
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, url):
+            return type("Response", (), {"status_code": 200, "text": ""})()
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
+
+    main_mod._scrape_url("https://example.com/job")
+
+    # Verify DNS was only called once (during validation)
+    assert resolve_calls == ["example.com"]
+    # Verify the connection used the validated public IP, not any later resolution
+    assert connected_address == "93.184.216.34"
+
+
+def test_log_scraped_values_bounds_page_text(capsys):
+    text = "secret " * 100
+
+    main_mod._log_scraped_values("https://example.com/job", {"text": text})
+
+    output = capsys.readouterr().out
+    assert f"length={len(text)}" in output
+    assert text not in output
+
+
+def test_scrape_url_accepts_hostname_with_public_dns(monkeypatch):
+    monkeypatch.setattr(
+        main_mod.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [
+            (10, 1, 6, "", ("2001:4860:4860::8888", 443, 0, 0))
+        ],
+    )
+    monkeypatch.setattr(
+        main_mod.httpx,
+        "Client",
+        lambda **kwargs: _client_for_response(
+            type("Response", (), {"status_code": 200, "text": ""})()
+        ),
+    )
+
+    assert main_mod._scrape_url("https://example.com/job")["url"] == (
+        "https://example.com/job"
+    )
+
+
+@pytest.mark.parametrize("status_code", [300, 500])
+def test_scrape_url_marks_all_non_success_statuses_blocked(monkeypatch, status_code):
+    response = type("Response", (), {"status_code": status_code, "text": ""})()
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(response)
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/status")
+
+    assert result["blocked"] == f"The website returned HTTP {status_code}"
+
+
+def test_scrape_url_reports_general_http_failure_status(monkeypatch):
+    response = type("Response", (), {"status_code": 404, "text": ""})()
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(response)
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/missing")
+
+    assert result["blocked"] == "The website returned HTTP 404"
+
+
+def test_scrape_url_follows_bounded_validated_redirects(monkeypatch):
+    responses = iter(
+        [
+            type(
+                "Response",
+                (),
+                {"status_code": 302, "headers": {"location": "/next"}, "text": ""},
+            )(),
+            type("Response", (), {"status_code": 200, "headers": {}, "text": ""})(),
+        ]
+    )
+    requested_urls = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def get(self, requested_url):
+            requested_urls.append(requested_url)
+            return next(responses)
+
+    monkeypatch.setattr(main_mod.httpx, "Client", FakeClient)
+
+    main_mod._scrape_url("https://93.184.216.34/jobs/start")
+
+    assert requested_urls == [
+        "https://93.184.216.34/jobs/start",
+        "https://93.184.216.34/next",
+    ]
+
+
+def test_scrape_url_validates_redirect_target(monkeypatch):
+    response = type(
+        "Response",
+        (),
+        {
+            "status_code": 302,
+            "headers": {"location": "http://127.0.0.1/private"},
+            "text": "",
+        },
+    )()
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(response)
+    )
+
+    with pytest.raises(ValueError):
+        main_mod._scrape_url("https://93.184.216.34/jobs/start")
+
+
+class StubCoreResponse:
+    def __init__(self, headers, chunks=()):
+        self.status = 200
+        self.headers = headers
+        self.extensions = {}
+        self.chunks = chunks
+        self.closed = False
+
+    def iter_stream(self):
+        yield from self.chunks
+
+    def close(self):
+        self.closed = True
+
+
+def test_pinned_transport_rejects_oversized_content_length_and_closes_response():
+    core_response = StubCoreResponse(
+        [(b"content-length", str(main_mod.MAX_DOCUMENT_BYTES + 1).encode())]
+    )
+    transport = object.__new__(main_mod._PinnedTransport)
+    transport.hostname = "example.com"
+    transport.pool = cast(
+        Any,
+        type("Pool", (), {"handle_request": lambda self, request: core_response})(),
+    )
+
+    with pytest.raises(main_mod._DocumentTooLargeError):
+        transport.handle_request(httpx.Request("GET", "https://example.com"))
+
+    assert core_response.closed
+
+
+def test_limited_response_stream_rejects_oversized_stream_without_content_length():
+    core_response = StubCoreResponse(
+        [], (b"x" * main_mod.MAX_DOCUMENT_BYTES, b"overflow")
+    )
+    stream = main_mod._LimitedResponseStream(cast(httpcore.Response, core_response))
+
+    with pytest.raises(main_mod._DocumentTooLargeError):
+        list(stream)
+
+    assert core_response.closed
+
+
+def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {
+            "url": url,
+            "title": "Scraped title",
+            "description": "Scraped description",
+        },
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(
+        notion,
+        "https://93.184.216.34/jobs/1",
+        dry_run=True,
+        prop_name_map={"Company": "Firma", "Role": "Stelle"},
+        company_override="Acme",
+        role_override="Developer",
+    )
+
+    output = capsys.readouterr().out
+    assert "🔎 Scraped values from https://93.184.216.34/jobs/1:" in output
+    assert "   title: [length=13, preview=Scraped title]" in output
+    assert "📝 Values prepared for Notion:" in output
+    assert "   Company: [length=4, preview=Acme]" in output
+    assert "   Role: [length=9, preview=Developer]" in output
+    assert "   Stage:" not in output
+    assert "   Source:" not in output
+    assert "   Notes:" not in output
+    assert "   Last Update Date:" not in output
+    assert "   Update Details:" not in output
+    assert "'Firma': {'rich_text': [{'text': {'content': 'Acme'}}]}" in output
+    assert "'Stelle': {'title': [{'text': {'content': 'Developer'}}]}" in output
+    assert "'URL': {'url': 'https://93.184.216.34/jobs/1'}" in output
+    assert notion.calls == []
+
+
+def test_run_create_populates_zurich_fields(monkeypatch):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {
+            "url": url,
+            "title": "Verbose page title",
+            "h1": "Head Legal IT and Operations 80-100%",
+            "text": "Job description text",
+        },
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(
+        notion,
+        "https://www.careers.zurich.com/job/1369843657",
+    )
+
+    _, properties, _ = notion.calls[0]
+    assert properties["Company"] == "Zurich Insurance"
+    assert properties["Role"] == "Head Legal IT and Operations 80-100%"
+    assert "Stage" not in properties
+    assert "Source" not in properties
+    assert "Notes" not in properties
+    assert "Last Update Date" not in properties
+    assert "Update Details" not in properties
+
+
+def test_run_create_retains_optional_fields_in_property_map(monkeypatch):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {"url": url, "text": "Notes text", "description": "Description text"},
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(
+        notion,
+        "https://93.184.216.34/jobs/1",
+        prop_name_map={"Notes": "Job notes", "Source": "Origin"},
+    )
+
+    _, properties, _ = notion.calls[0]
+    assert properties["Notes"] == "Notes text"
+    assert properties["Source"] == "Company site"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_source"),
+    [
+        ("https://www.linkedin.com/jobs/view/123", "LinkedIn"),
+        ("https://ch.indeed.com/viewjob?jk=123", "Indeed"),
+        ("https://www.careers.zurich.com/job/123", "Company site"),
+        ("https://notlinkedin.com/jobs/123", "Company site"),
+        ("https://linkedin.com.example/jobs/123", "Company site"),
+        ("https://indeed.com.example/jobs/123", "Company site"),
+    ],
+)
+def test_build_create_properties_sets_source_from_url(url, expected_source):
+    properties = main_mod._build_create_properties(
+        url,
+        {"text": "Job description"},
+        "Example Company",
+        "Engineer",
+    )
+
+    assert properties["Source"] == expected_source
+
+
+def test_load_prop_name_map_rejects_path_outside_working_directory(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    outside_path = tmp_path.parent / "prop_map.json"
+    outside_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main_mod._load_prop_name_map(str(outside_path))
+
+
+def test_load_prop_name_map_accepts_file_in_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    prop_map_path = tmp_path / "prop_map.json"
+    prop_map_path.write_text('{"Company": "Firma"}', encoding="utf-8")
+
+    assert main_mod._load_prop_name_map("./prop_map.json") == {"Company": "Firma"}
+
+
+@pytest.mark.parametrize(
+    "content", ["[]", '{"Company": 1}', '{"Company": ["Firma"]}']
+)
+def test_load_prop_name_map_rejects_non_string_object_maps(
+    tmp_path, monkeypatch, content
+):
+    monkeypatch.chdir(tmp_path)
+    prop_map_path = tmp_path / "prop_map.json"
+    prop_map_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main_mod._load_prop_name_map("./prop_map.json")
+
+
+def test_run_create_calls_notion_with_default_mapping(monkeypatch):
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_url",
+        lambda url: {"url": url, "h1": "Data Engineer"},
+    )
+    notion = FakeNotion()
+
+    main_mod._run_create(notion, "https://93.184.216.34/jobs/2")
+
+    database_id, properties, prop_name_map = notion.calls[0]
+    assert database_id == main_mod.get_database_id()
+    assert properties["Company"] == "93.184.216.34"
+    assert properties["Role"] == "Data Engineer"
+    assert properties["URL"] == "https://93.184.216.34/jobs/2"
+    assert properties["Type"] == "electronic"
+    assert properties["Applied date"]
+    assert "Stage" not in properties
+    assert "Source" not in properties
+    assert "Notes" not in properties
+    assert "Last Update Date" not in properties
+    assert "Update Details" not in properties
+    assert "Tracked" not in properties
+    assert prop_name_map is None
 
 
 def test_create_driver_builds_driver_and_wait(monkeypatch):

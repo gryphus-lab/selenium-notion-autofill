@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 """Notion → Selenium Autofill Script - Main entry point."""
 
+import argparse
 import ast
+import ipaddress
+import json
+import re
 import shutil
+import socket
+import ssl
 import sys
 import traceback
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
+import httpcore
+import httpx
 import pandas as pd
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -15,9 +27,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from selenium_notion_autofill.config import (
     APPLIED_DATE,
-    DATABASE_ID,
     EXIT_MESSAGE,
-    NOTION_API_KEY,
+    FIELD_SELECTORS,
+    NOTION_PROPERTY_MAP,
+    get_database_id,
+    get_notion_api_key,
+    validate_property_map,
 )
 
 try:
@@ -27,11 +42,34 @@ except ImportError:  # pragma: no cover - optional dependency
     import shutil
 
 from selenium_notion_autofill.utils import NotionHelper
+from selenium_notion_autofill.utils.notion_helper import build_notion_properties
 from selenium_notion_autofill.utils.selenium_helper import (
     handle_login,
     process_records,
     update_rejected_records,
 )
+
+LAST_UPDATE_DATE = "Last Update Date"
+UPDATE_DETAILS = "Update Details"
+MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
+MAX_REDIRECTS = 5
+NOTION_RICH_TEXT_LIMIT = 2000
+BLOCKED_PAGE_MESSAGE = "The website returned an access-blocked page"
+OPTIONAL_CREATE_FIELDS = (
+    "Description",
+    "Stage",
+    "Source",
+    "Notes",
+    LAST_UPDATE_DATE,
+    UPDATE_DETAILS,
+)
+HOSTNAME_COMPANY_MAP = {
+    r"(?:^|\.)careers\.zurich\.com$": "Zurich Insurance",
+}
+
+
+class _DocumentTooLargeError(RuntimeError):
+    """Raised when a scraped response exceeds the document size limit."""
 
 
 def extract_formatted_field(val):
@@ -174,26 +212,80 @@ def _create_driver():
     return driver, wait
 
 
+CREATE_USAGE = (
+    "uv run -m selenium_notion_autofill create <url> [--dry-run] "
+    "[--prop-map=path] [--company=NAME] [--role=TITLE]"
+)
+
+
+def _create_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="uv run -m selenium_notion_autofill create")
+    parser.add_argument("url")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--prop-map")
+    parser.add_argument("--company", dest="company_override")
+    parser.add_argument("--role", dest="role_override")
+    return parser
+
+
+def _load_prop_name_map(prop_map: str | None) -> dict[str, str] | None:
+    if not prop_map:
+        return None
+
+    try:
+        base_dir = Path.cwd().resolve()
+        prop_map_path = Path(prop_map).resolve()
+        if not prop_map_path.is_relative_to(base_dir):
+            raise ValueError("path must be inside the current working directory")
+
+        with prop_map_path.open("r", encoding="utf-8") as fh:
+            parsed_map = json.load(fh)
+        return validate_property_map(parsed_map)
+    except Exception as exc:
+        print(f"Could not load prop-map file {prop_map}: {exc}")
+        sys.exit(1)
+
+
+def _run_create_from_args(notion, args: list[str]) -> None:
+    if not args:
+        print(f"Usage: {CREATE_USAGE}")
+        sys.exit(1)
+
+    parsed_args = _create_arg_parser().parse_args(args)
+    if not parsed_args.dry_run:
+        notion = NotionHelper(get_notion_api_key())
+    _run_create(
+        notion,
+        parsed_args.url,
+        dry_run=parsed_args.dry_run,
+        prop_name_map=_load_prop_name_map(parsed_args.prop_map),
+        company_override=parsed_args.company_override,
+        role_override=parsed_args.role_override,
+    )
+
+
 def main():
     """Main entry point for the autofill script."""
     mode = sys.argv[1] if len(sys.argv) > 1 else "new"
 
-    notion = NotionHelper(NOTION_API_KEY)
-
     if mode == "update-rejections":
-        _run_update_rejections(notion)
+        _run_update_rejections(NotionHelper(get_notion_api_key()))
     elif mode == "new":
-        _run_new_entries(notion)
+        _run_new_entries(NotionHelper(get_notion_api_key()))
+    elif mode == "create":
+        _run_create_from_args(None, sys.argv[2:])
     else:
         print(f"Unknown mode: {mode}")
-        print("Usage: uv run -m selenium_notion_autofill [new|update-rejections]")
+        print(
+            "Usage: uv run -m selenium_notion_autofill [new|update-rejections|create]"
+        )
         sys.exit(1)
 
 
 def _run_new_entries(notion):
     """Process new untracked entries for the current month."""
     month_filter = get_month_filter()
-    df = notion.get_database_data(DATABASE_ID, filter=month_filter)
+    df = notion.get_database_data(get_database_id(), filter=month_filter)
 
     if df.empty:
         print("\n     ⚠️ No new records to process for this month. ")
@@ -213,35 +305,527 @@ def _run_new_entries(notion):
         process_records(driver, wait, df, notion)
     except Exception as exc:
         print(f"❌ Error: {exc}")
-        driver.save_screenshot("results/jobroom_main_error.png")
+        try:
+            driver.save_screenshot("results/jobroom_main_error.png")
+        except Exception as screenshot_exc:
+            print(f"   ⚠️ Could not save screenshot: {screenshot_exc}")
         traceback.print_exc()
     finally:
         input("\nPress Enter to close browser...")
         driver.quit()
 
 
-def _run_update_rejections(notion):
-    """Update existing entries that have been rejected since submission."""
-    rejected_filter = get_rejected_filter()
-    df = notion.get_database_data(DATABASE_ID, filter=rejected_filter)
+def _meta_content(soup, attrs: dict[str, str]) -> str | None:
+    meta = soup.find("meta", attrs=attrs)
+    value = meta.get("content") if meta else None
+    return value.strip() if isinstance(value, str) else None
 
-    if df.empty:
-        print("\n     ⚠️ No rejected records to update for this month.")
-        print("     All entries are either still open or already updated.")
-        print(EXIT_MESSAGE)
+
+def _scrape_with_beautifulsoup(text: str, result: dict[str, str]) -> dict[str, str]:
+    soup = BeautifulSoup(text, "html.parser")
+    for element in soup(["script", "style", "noscript"]):
+        element.decompose()
+
+    content = soup.find("main") or soup.find("article") or soup.body or soup
+    page_text = content.get_text("\n", strip=True)
+    if page_text:
+        result["text"] = re.sub(r"\n{2,}", "\n", page_text)
+
+    if soup.title and isinstance(soup.title.string, str):
+        result["title"] = soup.title.string.strip()
+
+    description = _meta_content(soup, {"name": "description"}) or _meta_content(
+        soup, {"property": "og:description"}
+    )
+    if description:
+        result["description"] = description
+
+    h1 = soup.find("h1")
+    if h1:
+        result["h1"] = h1.get_text(strip=True)
+    return result
+
+
+class _HTMLFallbackExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.description: str | None = None
+        self.skip_depth = 0
+        self.title_depth = 0
+        self.h1_depth = 0
+        self.title_parts: list[str] = []
+        self.h1_parts: list[str] = []
+        self.text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag_name = tag.lower()
+        if tag_name in {"script", "style", "noscript"}:
+            self.skip_depth += 1
+            return
+
+        if self.skip_depth:
+            return
+
+        if tag_name == "title":
+            self.title_depth += 1
+        elif tag_name == "h1":
+            self.h1_depth += 1
+        elif tag_name == "meta":
+            self._capture_meta_description(attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_name = tag.lower()
+        if tag_name in {"script", "style", "noscript"} and self.skip_depth:
+            self.skip_depth -= 1
+        elif tag_name == "title" and self.title_depth:
+            self.title_depth -= 1
+        elif tag_name == "h1" and self.h1_depth:
+            self.h1_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            return
+
+        value = data.strip()
+        if not value:
+            return
+
+        self.text_parts.append(value)
+        if self.title_depth:
+            self.title_parts.append(value)
+        if self.h1_depth:
+            self.h1_parts.append(value)
+
+    def _capture_meta_description(self, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {
+            name.lower(): value
+            for name, value in attrs
+            if isinstance(name, str) and isinstance(value, str)
+        }
+        meta_name = attr_map.get("name", "").lower()
+        meta_property = attr_map.get("property", "").lower()
+        if meta_name == "description" or meta_property == "og:description":
+            content = attr_map.get("content", "").strip()
+            if content:
+                self.description = content
+
+    def apply_to(self, result: dict[str, str]) -> dict[str, str]:
+        page_text = " ".join(self.text_parts).strip()
+        if page_text:
+            result["text"] = page_text
+
+        title = " ".join(self.title_parts).strip()
+        if title:
+            result["title"] = title
+
+        if self.description:
+            result["description"] = self.description
+
+        h1 = " ".join(self.h1_parts).strip()
+        if h1:
+            result["h1"] = h1
+
+        return result
+
+
+def _scrape_with_regex(text: str, result: dict[str, str]) -> dict[str, str]:
+    parser = _HTMLFallbackExtractor()
+    parser.feed(text)
+    parser.close()
+    return parser.apply_to(result)
+
+
+class _PinnedNetworkBackend(httpcore.NetworkBackend):
+    def __init__(self, address: str):
+        self.address = address
+        self.backend = httpcore.SyncBackend()
+
+    def connect_tcp(
+        self,
+        host,
+        port,
+        timeout=None,
+        local_address=None,
+        socket_options=None,
+    ):
+        return self.backend.connect_tcp(
+            self.address, port, timeout, local_address, socket_options
+        )
+
+    def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        return self.backend.connect_unix_socket(path, timeout, socket_options)
+
+    def sleep(self, seconds):
+        return self.backend.sleep(seconds)
+
+
+class _LimitedResponseStream(httpx.SyncByteStream):
+    def __init__(self, core_response: httpcore.Response):
+        self.core_response = core_response
+        self.bytes_read = 0
+
+    def __iter__(self):
+        try:
+            for chunk in self.core_response.iter_stream():
+                self.bytes_read += len(chunk)
+                if self.bytes_read > MAX_DOCUMENT_BYTES:
+                    raise _DocumentTooLargeError("response exceeds document size limit")
+                yield chunk
+        finally:
+            self.core_response.close()
+
+    def close(self) -> None:
+        self.core_response.close()
+
+
+class _PinnedTransport(httpx.BaseTransport):
+    def __init__(self, address: str, hostname: str):
+        self.address = address
+        self.hostname = hostname
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.ssl_context.check_hostname = True
+        self.ssl_context.verify_mode = ssl.CERT_REQUIRED
+        self.pool = httpcore.ConnectionPool(
+            ssl_context=self.ssl_context, network_backend=_PinnedNetworkBackend(address)
+        )
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        core_request = httpcore.Request(
+            request.method,
+            str(request.url),
+            headers=request.headers.raw,
+            content=request.content,
+            extensions={
+                **request.extensions,
+                "sni_hostname": self.hostname,
+            },
+        )
+        core_response = self.pool.handle_request(core_request)
+        content_length = next(
+            (
+                value
+                for name, value in core_response.headers
+                if name.lower() == b"content-length"
+            ),
+            None,
+        )
+        if content_length is not None:
+            try:
+                declared_length = int(content_length)
+                if declared_length < 0 or declared_length > MAX_DOCUMENT_BYTES:
+                    core_response.close()
+                    raise _DocumentTooLargeError("response exceeds document size limit")
+            except (TypeError, ValueError):
+                pass
+        response_stream = _LimitedResponseStream(core_response)
+        try:
+            return httpx.Response(
+                core_response.status,
+                headers=core_response.headers,
+                stream=response_stream,
+                extensions=core_response.extensions,
+                request=request,
+            )
+        except Exception:
+            response_stream.close()
+            raise
+
+    def close(self) -> None:
+        self.pool.close()
+
+
+def _fetch_url(url: str, address: str) -> tuple[httpx.Response, str]:
+    hostname = urlparse(url).hostname
+    if hostname is None:
+        raise ValueError("URL must include a hostname")
+    with httpx.Client(
+        transport=_PinnedTransport(address, hostname),
+        timeout=15,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        response = client.get(url)
+    return response, response.text or ""
+
+
+def _redirect_location(response: httpx.Response) -> str | None:
+    if 300 <= response.status_code < 400:
+        return getattr(response, "headers", {}).get("location")
+    return None
+
+
+def _scrape_url(url: str) -> dict:
+    """Scrape a URL to extract title, description and first h1."""
+    current_url = url
+    for redirect_count in range(MAX_REDIRECTS + 1):
+        address = _validate_external_url(current_url)
+        try:
+            resp, text = _fetch_url(current_url, address)
+            location = _redirect_location(resp)
+            if location and redirect_count < MAX_REDIRECTS:
+                current_url = urljoin(current_url, location)
+                continue
+            break
+        except _DocumentTooLargeError:
+            print(f"   ❌ Could not fetch URL {url}: document exceeds size limit")
+            return {"url": url}
+        except Exception as exc:
+            print(f"   ❌ Could not fetch URL {url}: {exc}")
+            return {"url": url, "blocked": f"The URL could not be fetched: {exc}"}
+
+    result = {"url": url}
+    try:
+        result = _scrape_with_beautifulsoup(text, result)
+    except Exception:
+        result = _scrape_with_regex(text, result)
+
+    status_code = resp.status_code
+    if 200 <= status_code < 300:
+        heading_fields = " ".join(
+            str(result.get(field, "")) for field in ("title", "h1")
+        ).lower()
+        text_fields = str(result.get("text", ""))[:500].lower()
+        if any(
+            marker in heading_fields
+            for marker in ("access denied", "captcha", "unusual traffic", "robot check")
+        ) or any(
+            marker in text_fields
+            for marker in ("access denied", "unusual traffic", "robot check")
+        ):
+            result["blocked"] = BLOCKED_PAGE_MESSAGE
+    elif status_code in {403, 429}:
+        result["blocked"] = BLOCKED_PAGE_MESSAGE
+    else:
+        result["blocked"] = f"The website returned HTTP {status_code}"
+    return result
+
+
+def _validate_external_url(url: str) -> str:
+    """Reject URL targets that could be used to access local network services."""
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("URL must be a non-empty string")
+
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL must use HTTP(S) and include a hostname")
+    if parsed.username or parsed.password:
+        raise ValueError("URL must not contain credentials")
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ValueError("URL must not target localhost")
+
+    return _validate_public_hostname(
+        hostname,
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
+
+
+def _validate_public_hostname(hostname: str, port: int) -> str:
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return _validate_resolved_addresses(hostname, port)
+
+    if not address.is_global:
+        raise ValueError("URL must target a public IP address")
+    return str(address)
+
+
+def _validate_resolved_addresses(hostname: str, port: int) -> str:
+    try:
+        addresses: set[str] = {
+            str(sockaddr[4][0])
+            for sockaddr in socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError) as exc:
+        raise ValueError("URL hostname could not be resolved") from exc
+    if not addresses or any(
+        not ipaddress.ip_address(address).is_global for address in addresses
+    ):
+        raise ValueError("URL must resolve only to public IP addresses")
+    return min(addresses)
+
+
+def _source_from_url(url: str) -> str:
+    hostname = (urlparse(url).hostname or "").rstrip(".").lower()
+    if hostname == "linkedin.com" or hostname.endswith(".linkedin.com"):
+        return "LinkedIn"
+    if hostname == "indeed.com" or hostname.endswith(".indeed.com"):
+        return "Indeed"
+    return "Company site"
+
+
+def _resolve_company_name(company: str, company_override: str | None) -> str:
+    if company_override:
+        return company_override
+    normalized_company = company.rstrip(".").lower()
+    for hostname_pattern, company_name in HOSTNAME_COMPANY_MAP.items():
+        if re.search(hostname_pattern, normalized_company):
+            return company_name
+    return company
+
+
+def _remove_unmapped_optional_properties(
+    properties: dict[str, object], final_map: dict[str, str] | None
+) -> None:
+    for field_name in OPTIONAL_CREATE_FIELDS:
+        if field_name not in FIELD_SELECTORS and field_name not in (final_map or {}):
+            properties.pop(field_name, None)
+
+
+def _build_create_properties(
+    url: str,
+    scraped: dict,
+    company: str,
+    title: str,
+) -> dict[str, object]:
+    today_iso = datetime.now(timezone.utc).date().isoformat()
+    values = {
+        "Company": company,
+        "Role": title,
+        "URL": url,
+        "Date": today_iso,
+        "Type": "electronic",
+        APPLIED_DATE: today_iso,
+        "Tracked": False,
+        "Stage": "Applied",
+        "Source": _source_from_url(url),
+        "Notes": _truncate_optional_text(scraped.get("text")),
+        LAST_UPDATE_DATE: today_iso,
+        UPDATE_DETAILS: "New entry",
+        "Description": _truncate_optional_text(scraped.get("description")),
+    }
+    properties: dict[str, object] = {
+        field_name: values[field_name]
+        for field_name in (
+            *FIELD_SELECTORS,
+            APPLIED_DATE,
+            *OPTIONAL_CREATE_FIELDS,
+        )
+        if field_name in values
+    }
+    return properties
+
+
+def _truncate_optional_text(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value[:NOTION_RICH_TEXT_LIMIT]
+    return None
+
+
+def _build_dry_run_payload(
+    properties: dict[str, object], final_map: dict[str, str] | None
+) -> dict:
+    return build_notion_properties(properties, final_map)
+
+
+def _log_scraped_values(url: str, scraped: dict) -> None:
+    print(f"🔎 Scraped values from {_escape_terminal_controls(url)}:")
+    for key, value in scraped.items():
+        if isinstance(value, str):
+            value = f"[length={len(value)}, preview={_scraped_text_preview(value)}]"
+        print(f"   {key}: {value}")
+
+
+def _scraped_text_preview(value: str, limit: int = 200) -> str:
+    normalized = re.sub(r"\s+", " ", value).strip()
+    preview = _escape_terminal_controls(normalized[:limit])
+    return f"{preview}..." if len(normalized) > limit else preview
+
+
+def _escape_terminal_controls(value: str) -> str:
+    return re.sub(
+        r"[\x00-\x1f\x7f-\x9f]",
+        lambda match: f"\\x{ord(match.group()):02x}",
+        value,
+    )
+
+
+def _log_prepared_properties(properties: dict[str, object]) -> None:
+    print("📝 Values prepared for Notion:")
+    for key, value in properties.items():
+        if isinstance(value, str):
+            value = f"[length={len(value)}, preview={_scraped_text_preview(value)}]"
+        print(f"   {key}: {value}")
+
+
+def _resolve_property_map(prop_name_map: dict | None) -> dict | None:
+    selected_map = prop_name_map if prop_name_map else NOTION_PROPERTY_MAP
+    return validate_property_map(selected_map) if selected_map else None
+
+
+def _create_notion_page(notion, properties: dict[str, object], final_map: dict | None):
+    if final_map:
+        return notion.create_page(
+            get_database_id(), properties, prop_name_map=final_map
+        )
+    return notion.create_page(get_database_id(), properties)
+
+
+def _run_create(
+    notion,
+    url: str,
+    dry_run: bool = False,
+    prop_name_map: dict | None = None,
+    company_override: str | None = None,
+    role_override: str | None = None,
+):
+    """Create a Notion page using the same property names the Selenium script expects.
+
+    The database field names must align with `FIELD_SELECTORS` keys, which are the
+    same names used by the rest of the automation. This keeps the new URL entry
+    feature consistent with the Job-Room autofill flow.
+    """
+    try:
+        scraped = _scrape_url(url)
+    except ValueError as exc:
+        print(f"❌ Could not scrape URL {url}: {exc}")
+        sys.exit(1)
+
+    _log_scraped_values(url, scraped)
+    if scraped.get("blocked"):
+        print(f"❌ Notion entry was not created: {scraped['blocked']}")
+        sys.exit(1)
+
+    final_map = _resolve_property_map(prop_name_map)
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname or parsed.netloc or url
+
+    title = role_override or scraped.get("h1") or scraped.get("title") or hostname
+    company = _resolve_company_name(hostname, company_override)
+    properties = _build_create_properties(url, scraped, company, title)
+    _remove_unmapped_optional_properties(properties, final_map)
+
+    _log_prepared_properties(properties)
+
+    if dry_run:
+        notion_payload = _build_dry_run_payload(properties, final_map)
+        print("--- Dry run: Notion payload to create ---")
+        print(notion_payload)
+        print("--- End payload ---")
         return
 
-    # Filter to only those with Update Details (rejection reason)
-    df = df[
-        df["Update Details"].apply(lambda x: pd.notna(x) and str(x).strip() != "")
+    page_id = _create_notion_page(notion, properties, final_map)
+
+    if page_id:
+        print(f"✅ Created Notion entry for {url} -> {page_id}")
+    else:
+        print(f"❌ Failed to create Notion entry for {url}")
+        sys.exit(1)
+
+
+def _filter_rejected_records(df: pd.DataFrame) -> pd.DataFrame:
+    return df[
+        df["Update Details"].apply(
+            lambda value: pd.notna(value) and str(value).strip() != ""
+        )
     ].reset_index(drop=True)
 
-    if df.empty:
-        print("\n     ⚠️ Rejected records found but none have Update Details.")
-        print("     Please add rejection reasons in Notion first.")
-        print(EXIT_MESSAGE)
-        return
 
+def _print_rejected_records(df: pd.DataFrame) -> None:
     print(f"✅ Found {len(df)} rejected records to update on Job-Room")
     print("\nRecords to update:")
     for _, row in df.iterrows():
@@ -250,8 +834,8 @@ def _run_update_rejections(notion):
         update_date = row.get("Last Update Date", "N/A")
         print(f"   • {company} - {role} (rejected: {update_date})")
 
-    driver, wait = _create_driver()
 
+def _process_rejected_records(driver, wait, df, notion) -> None:
     try:
         print("\n🌐 Opening Job-Room...")
         handle_login(driver)
@@ -267,6 +851,31 @@ def _run_update_rejections(notion):
     finally:
         input("\nPress Enter to close browser...")
         driver.quit()
+
+
+def _run_update_rejections(notion):
+    """Update existing entries that have been rejected since submission."""
+    rejected_filter = get_rejected_filter()
+    df = notion.get_database_data(get_database_id(), filter=rejected_filter)
+
+    if df.empty:
+        print("\n     ⚠️ No rejected records to update for this month.")
+        print("     All entries are either still open or already updated.")
+        print(EXIT_MESSAGE)
+        return
+
+    df = _filter_rejected_records(df)
+
+    if df.empty:
+        print("\n     ⚠️ Rejected records found but none have Update Details.")
+        print("     Please add rejection reasons in Notion first.")
+        print(EXIT_MESSAGE)
+        return
+
+    _print_rejected_records(df)
+
+    driver, wait = _create_driver()
+    _process_rejected_records(driver, wait, df, notion)
 
 
 if __name__ == "__main__":

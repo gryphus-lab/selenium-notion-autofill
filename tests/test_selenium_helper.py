@@ -441,7 +441,7 @@ def test_handle_login_falls_back_to_fresh_login(monkeypatch):
 
     driver = Driver()
     assert selenium_helper.handle_login(driver) is True
-    assert driver.visited[0] == selenium_helper.WEBSITE_URL
+    assert driver.visited[0] == selenium_helper.get_website_url()
 
 
 def test_handle_login_fresh_login_with_buttons(monkeypatch):

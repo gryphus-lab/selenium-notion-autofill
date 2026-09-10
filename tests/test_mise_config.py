@@ -67,3 +67,10 @@ def test_add_task_unchanged(mise_config):
     """Test that the 'add' task for adding dependencies remains intact."""
     add_task = mise_config["tasks"]["add"]
     assert add_task["run"] == "uv add {args}"
+
+
+def test_create_task_forwards_cli_arguments_automatically(mise_config):
+    """The create task must let mise append the URL and CLI options."""
+    create_task = mise_config["tasks"]["create"]
+    assert create_task["run"] == "uv run -m selenium_notion_autofill create"
+    assert "{args}" not in create_task["run"]
