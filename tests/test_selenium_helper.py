@@ -71,6 +71,46 @@ def test_fill_checkbox_and_radio_execute_script(monkeypatch):
     assert executed
 
 
+def test_fill_checkbox_and_radio_skip_unselected_elements():
+    executed = []
+
+    class Driver:
+        def execute_script(self, script, element):
+            executed.append(script)
+
+    class Elem:
+        def is_displayed(self):
+            return False
+
+    element = Elem()
+    selenium_helper.fill_checkbox(Driver(), element, "Hidden")
+    selenium_helper.fill_radio(Driver(), element, "Radio", False)
+
+    assert executed == []
+
+
+def test_get_notion_scalar_value_returns_original_for_malformed_literal():
+    value = "{'type': 'string'"
+
+    assert selenium_helper.get_notion_scalar_value(value) == value
+
+
+def test_fill_field_saves_screenshot_on_webdriver_error():
+    screenshots = []
+
+    class Wait:
+        def until(self, condition):
+            raise TimeoutException("missing")
+
+    class Driver:
+        def save_screenshot(self, path):
+            screenshots.append(path)
+
+    selenium_helper.fill_field(Driver(), Wait(), "Role", "input.role", "Engineer")
+
+    assert screenshots == ["results/jobroom_fill_field_error.png"]
+
+
 def test_fill_field_type_unknown_returns_none():
     # When Type resolves to None, fill_field should return early
     result = selenium_helper.fill_field(

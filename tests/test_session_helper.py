@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+from selenium.common.exceptions import WebDriverException
+
 from selenium_notion_autofill.utils import session_helper
 
 
@@ -237,6 +239,50 @@ def test_restore_storage_with_empty_storage(tmp_path, monkeypatch):
     session_helper._restore_storage(d)
     # No items to set means no execute_script calls
     assert len(recorded) == 0
+
+
+def test_is_session_from_today_returns_false_for_invalid_metadata(
+    tmp_path, monkeypatch
+):
+    info_file = tmp_path / "session_info.json"
+    info_file.write_text("not json")
+    monkeypatch.setattr(session_helper, "SESSION_INFO_FILE", str(info_file))
+
+    assert session_helper._is_session_from_today() is False
+
+
+def test_save_session_handles_storage_webdriver_error(tmp_path, monkeypatch):
+    cookies_file = tmp_path / "cookies.json"
+    storage_file = tmp_path / "storage.json"
+    info_file = tmp_path / "session_info.json"
+    monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
+    monkeypatch.setattr(session_helper, "STORAGE_FILE", str(storage_file))
+    monkeypatch.setattr(session_helper, "SESSION_INFO_FILE", str(info_file))
+
+    class Driver(DummyDriver):
+        def execute_script(self, script, *args):
+            raise WebDriverException("storage unavailable")
+
+    session_helper.save_session(Driver())
+
+    assert json.loads(storage_file.read_text()) == {}
+    assert info_file.exists()
+
+
+def test_apply_cookies_ignores_webdriver_errors():
+    class Driver:
+        def add_cookie(self, cookie):
+            raise WebDriverException("cookie rejected")
+
+    session_helper._apply_cookies(Driver(), [{"name": "x", "value": "y"}])
+
+
+def test_load_session_returns_false_for_invalid_cookie_json(tmp_path, monkeypatch):
+    cookies_file = tmp_path / "cookies.json"
+    cookies_file.write_text("not json")
+    monkeypatch.setattr(session_helper, "COOKIES_FILE", str(cookies_file))
+
+    assert session_helper.load_session(DummyDriver()) is False
 
 
 def test_restore_storage_handles_missing_keys(tmp_path, monkeypatch):
