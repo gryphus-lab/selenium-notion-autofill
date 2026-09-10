@@ -120,6 +120,37 @@ def test_get_month_and_rejected_filters_use_shared_dates(monkeypatch):
     assert rejected_filter["and"][3]["property"] == "Stage"
 
 
+def test_create_arg_parser_uses_expected_defaults():
+    args = main_mod._create_arg_parser().parse_args(["https://example.com/job"])
+
+    assert args.url == "https://example.com/job"
+    assert args.dry_run is False
+    assert args.prop_map is None
+    assert args.company_override is None
+    assert args.role_override is None
+
+
+def test_create_arg_parser_parses_optional_arguments():
+    args = main_mod._create_arg_parser().parse_args(
+        [
+            "https://example.com/job",
+            "--dry-run",
+            "--prop-map",
+            "properties.json",
+            "--company",
+            "Acme",
+            "--role",
+            "Software Engineer",
+        ]
+    )
+
+    assert args.url == "https://example.com/job"
+    assert args.dry_run is True
+    assert args.prop_map == "properties.json"
+    assert args.company_override == "Acme"
+    assert args.role_override == "Software Engineer"
+
+
 def test_prepare_dataframe_transforms_columns():
     df = pd.DataFrame(
         [
