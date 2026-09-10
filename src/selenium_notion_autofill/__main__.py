@@ -367,10 +367,7 @@ def _extract_company_from_soup(soup) -> str | None:
     if company:
         return company
 
-    site_name = _meta_content(soup, {"property": "og:site_name"})
-    if site_name and site_name.strip().lower() not in _JOB_BOARD_SITE_NAMES:
-        return site_name.strip()
-    return None
+    return _extract_company_from_site_name(soup)
 
 
 def _extract_company_from_json_ld(soup) -> str | None:
@@ -433,6 +430,13 @@ def _extract_company_from_selectors(soup) -> str | None:
             name = element.get_text(strip=True)
             if name:
                 return name
+    return None
+
+
+def _extract_company_from_site_name(soup) -> str | None:
+    site_name = _meta_content(soup, {"property": "og:site_name"})
+    if site_name and site_name.strip().lower() not in _JOB_BOARD_SITE_NAMES:
+        return site_name.strip()
     return None
 
 
