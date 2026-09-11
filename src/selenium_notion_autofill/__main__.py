@@ -10,7 +10,6 @@ import shutil
 import socket
 import ssl
 import sys
-import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -33,6 +32,7 @@ from selenium_notion_autofill.config import (
     NOTION_PROPERTY_MAP,
     get_database_id,
     get_notion_api_key,
+    is_browser_fallback_enabled,
     validate_property_map,
 )
 
@@ -736,12 +736,10 @@ def _scrape_url(url: str) -> dict:
 
     _mark_blocked_result(result, resp.status_code)
 
-    # Bypass: if the lightweight HTTP fetch was blocked, retry with a real
-    # headless browser, which executes JS and passes most anti-bot walls
-    # (e.g. Indeed / Cloudflare). Only attempted for blocks, and only if a
-    # browser is available; failures fall back to the original blocked result.
-    if result.get("blocked"):
-        browser_result = _scrape_with_browser(url)
+    # The browser retry is opt-in because it requires a separately enforced
+    # egress boundary for safe navigation.
+    if result.get("blocked") and is_browser_fallback_enabled():
+        browser_result = _scrape_with_browser(url, trusted=True)
         if browser_result is not None:
             return browser_result
     return result
@@ -770,7 +768,11 @@ def _scrape_with_browser(url: str, *, trusted: bool = False) -> dict | None:
         driver = _create_headless_driver()
         driver.set_page_load_timeout(30)
         driver.get(url)
-        time.sleep(2.5)  # allow anti-bot JS challenge to resolve and render
+        WebDriverWait(driver, 10).until(
+            lambda browser: (
+                browser.execute_script("return document.readyState") == "complete"
+            )
+        )
         html = driver.page_source or ""
     except Exception as exc:  # noqa: BLE001 - browser fallback is best-effort
         print(f"   ⚠️  Browser fallback could not fetch {url}: {exc}")
@@ -906,11 +908,17 @@ def _resolve_company_name(
     return hostname
 
 
+# Stage is required for every newly created application.
+_ALWAYS_KEEP_CREATE_FIELDS = ("Stage",)
+
+
 def _remove_unmapped_optional_properties(
     properties: dict[str, object], final_map: dict[str, str] | None
 ) -> None:
-    """Remove unconfigured optional properties in place."""
+    """Remove unconfigured optional properties in place, preserving required ones."""
     for field_name in OPTIONAL_CREATE_FIELDS:
+        if field_name in _ALWAYS_KEEP_CREATE_FIELDS:
+            continue
         if field_name not in FIELD_SELECTORS and field_name not in (final_map or {}):
             properties.pop(field_name, None)
 

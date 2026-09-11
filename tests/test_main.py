@@ -44,6 +44,15 @@ class FakeWait:
         self.timeout = timeout
 
 
+class _ImmediateWait:
+    def __init__(self, driver, timeout):
+        self.driver = driver
+        self.timeout = timeout
+
+    def until(self, condition):
+        return condition(self.driver)
+
+
 def _client_for_response(response, **kwargs):
     class FakeClient:
         def __init__(self, **kwargs):
@@ -429,7 +438,7 @@ def test_scrape_url_sends_browser_headers(monkeypatch):
 
 
 def test_scrape_url_falls_back_to_browser_when_blocked(monkeypatch):
-    """Untrusted blocked URLs do not bypass SSRF checks through Selenium."""
+    """The browser fallback stays disabled unless explicitly opted in."""
 
     class Response:
         status_code = 403
@@ -438,13 +447,14 @@ def test_scrape_url_falls_back_to_browser_when_blocked(monkeypatch):
     monkeypatch.setattr(
         main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
     )
-    browser_calls = []
-    monkeypatch.setattr(main_mod, "_scrape_with_browser", browser_calls.append)
+    monkeypatch.delenv("ENABLE_BROWSER_FALLBACK", raising=False)
+    driver_calls = []
+    monkeypatch.setattr(main_mod, "_create_headless_driver", driver_calls.append)
 
     result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked")
 
     assert result["blocked"] == main_mod.BLOCKED_PAGE_MESSAGE
-    assert browser_calls == ["https://93.184.216.34/jobs/blocked"]
+    assert driver_calls == []
 
 
 def test_scrape_url_returns_successful_browser_result(monkeypatch):
@@ -456,7 +466,10 @@ def test_scrape_url_returns_successful_browser_result(monkeypatch):
     monkeypatch.setattr(
         main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
     )
-    monkeypatch.setattr(main_mod, "_scrape_with_browser", lambda url: browser_result)
+    monkeypatch.setenv("ENABLE_BROWSER_FALLBACK", "true")
+    monkeypatch.setattr(
+        main_mod, "_scrape_with_browser", lambda url, trusted=False: browser_result
+    )
 
     assert main_mod._scrape_url(browser_result["url"]) == browser_result
 
@@ -474,12 +487,19 @@ def test_scrape_with_browser_returns_none_when_still_blocked(monkeypatch):
         def get(self, *_):
             pass
 
+        def execute_script(self, *_):
+            return "complete"
+
         def quit(self):
             pass
 
     monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
     monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
-    monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        main_mod,
+        "WebDriverWait",
+        lambda driver, timeout: _ImmediateWait(driver, timeout),
+    )
 
     assert (
         _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True)
@@ -497,12 +517,19 @@ def test_scrape_with_browser_returns_none_when_body_is_blocked(monkeypatch):
         def get(self, *_):
             pass
 
+        def execute_script(self, *_):
+            return "complete"
+
         def quit(self):
             pass
 
     monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
     monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
-    monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        main_mod,
+        "WebDriverWait",
+        lambda driver, timeout: _ImmediateWait(driver, timeout),
+    )
 
     assert (
         _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True)
@@ -549,12 +576,19 @@ def test_scrape_with_browser_uses_regex_when_beautifulsoup_fails(monkeypatch):
         def get(self, *_):
             pass
 
+        def execute_script(self, *_):
+            return "complete"
+
         def quit(self):
             pass
 
     monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
     monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
-    monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        main_mod,
+        "WebDriverWait",
+        lambda driver, timeout: _ImmediateWait(driver, timeout),
+    )
     monkeypatch.setattr(
         main_mod,
         "_scrape_with_beautifulsoup",
@@ -590,12 +624,19 @@ def test_scrape_with_browser_parses_rendered_html(monkeypatch):
         def get(self, *_):
             pass
 
+        def execute_script(self, *_):
+            return "complete"
+
         def quit(self):
             pass
 
     monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
     monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
-    monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        main_mod,
+        "WebDriverWait",
+        lambda driver, timeout: _ImmediateWait(driver, timeout),
+    )
 
     result = _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/1", trusted=True)
 
@@ -1059,8 +1100,8 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert "📝 Values prepared for Notion:" in output
     assert "   Company: [length=4, preview=Acme]" in output
     assert "   Role: [length=9, preview=Developer]" in output
-    assert "   Stage:" not in output
-    assert "'Stage': {'status': {'name': 'Applied'}}" not in output
+    assert "   Stage: [length=7, preview=Applied]" in output
+    assert "'Stage': {'status': {'name': 'Applied'}}" in output
     assert "   Source:" not in output
     assert "   Notes:" not in output
     assert "   Last Update Date:" not in output
@@ -1092,7 +1133,7 @@ def test_run_create_populates_zurich_fields(monkeypatch):
     _, properties, _ = _create_call(notion)
     assert properties["Company"] == "Zurich Insurance"
     assert properties["Role"] == "Head Legal IT and Operations 80-100%"
-    assert "Stage" not in properties
+    assert properties["Stage"] == "Applied"
     assert "Source" not in properties
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
@@ -1192,7 +1233,7 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     assert properties["URL"] == "https://93.184.216.34/jobs/2"
     assert properties["Type"] == "electronic"
     assert properties["Applied date"]
-    assert "Stage" not in properties
+    assert properties["Stage"] == "Applied"
     assert "Source" not in properties
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
