@@ -788,8 +788,7 @@ def _scrape_with_browser(url: str, *, trusted: bool = False) -> dict | None:
     except Exception:  # noqa: BLE001
         result = _scrape_with_regex(html, result)
 
-    heading = " ".join(str(result.get(field, "")) for field in ("title", "h1")).lower()
-    if not html.strip() or any(marker in heading for marker in BLOCKED_HEADING_MARKERS):
+    if not html.strip() or _has_blocked_content(result):
         return None  # still blocked → let caller keep the original result
 
     print(f"   🌐 Browser fallback succeeded for {url}")
@@ -907,18 +906,11 @@ def _resolve_company_name(
     return hostname
 
 
-# Fields that must always be present on a newly created entry, regardless of
-# whether they appear in FIELD_SELECTORS or the property map.
-_ALWAYS_KEEP_CREATE_FIELDS = ("Stage",)
-
-
 def _remove_unmapped_optional_properties(
     properties: dict[str, object], final_map: dict[str, str] | None
 ) -> None:
-    """Remove unconfigured optional properties in place, preserving required ones."""
+    """Remove unconfigured optional properties in place."""
     for field_name in OPTIONAL_CREATE_FIELDS:
-        if field_name in _ALWAYS_KEEP_CREATE_FIELDS:
-            continue
         if field_name not in FIELD_SELECTORS and field_name not in (final_map or {}):
             properties.pop(field_name, None)
 

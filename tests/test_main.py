@@ -470,6 +470,26 @@ def test_scrape_with_browser_returns_none_when_still_blocked(monkeypatch):
     assert _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True) is None
 
 
+def test_scrape_with_browser_returns_none_when_body_is_blocked(monkeypatch):
+    class _Driver:
+        page_source = "<html><title>Job</title><body>Access Denied</body></html>"
+
+        def set_page_load_timeout(self, *_):
+            pass
+
+        def get(self, *_):
+            pass
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
+    monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
+    monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
+
+    assert _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True) is None
+
+
 def test_scrape_with_browser_rejects_untrusted_url_before_driver_creation(monkeypatch):
     driver_calls = []
     monkeypatch.setattr(main_mod, "_create_headless_driver", driver_calls.append)
@@ -893,8 +913,8 @@ def test_run_create_dry_run_builds_mapped_payload(monkeypatch, capsys):
     assert "📝 Values prepared for Notion:" in output
     assert "   Company: [length=4, preview=Acme]" in output
     assert "   Role: [length=9, preview=Developer]" in output
-    assert "   Stage: [length=7, preview=Applied]" in output
-    assert "'Stage': {'status': {'name': 'Applied'}}" in output
+    assert "   Stage:" not in output
+    assert "'Stage': {'status': {'name': 'Applied'}}" not in output
     assert "   Source:" not in output
     assert "   Notes:" not in output
     assert "   Last Update Date:" not in output
@@ -926,7 +946,7 @@ def test_run_create_populates_zurich_fields(monkeypatch):
     _, properties, _ = _create_call(notion)
     assert properties["Company"] == "Zurich Insurance"
     assert properties["Role"] == "Head Legal IT and Operations 80-100%"
-    assert properties["Stage"] == "Applied"
+    assert "Stage" not in properties
     assert "Source" not in properties
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
@@ -1026,7 +1046,7 @@ def test_run_create_calls_notion_with_default_mapping(monkeypatch):
     assert properties["URL"] == "https://93.184.216.34/jobs/2"
     assert properties["Type"] == "electronic"
     assert properties["Applied date"]
-    assert properties["Stage"] == "Applied"
+    assert "Stage" not in properties
     assert "Source" not in properties
     assert "Notes" not in properties
     assert "Last Update Date" not in properties
