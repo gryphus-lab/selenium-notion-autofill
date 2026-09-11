@@ -9,6 +9,18 @@ import pytest
 
 from selenium_notion_autofill import __main__ as main_mod
 
+# Real implementation captured at import time, before the autouse fixture
+# stubs it out, so fallback-specific tests can exercise the genuine function.
+_REAL_SCRAPE_WITH_BROWSER = main_mod._scrape_with_browser
+
+
+@pytest.fixture(autouse=True)
+def _disable_browser_fallback(monkeypatch):
+    """By default, disable the Selenium browser fallback in _scrape_url so unit
+    tests exercise the HTTP path in isolation and never launch a real browser.
+    Tests that specifically cover the fallback re-patch _scrape_with_browser."""
+    monkeypatch.setattr(main_mod, "_scrape_with_browser", lambda url: None)
+
 
 class FakeDriver:
     def __init__(self):
@@ -414,6 +426,110 @@ def test_scrape_url_marks_access_blocked_pages(monkeypatch):
     result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked")
 
     assert result["blocked"] == "The website returned an access-blocked page"
+
+
+def test_scrape_url_sends_browser_headers(monkeypatch):
+    """The HTTP fetch must send realistic browser headers so soft anti-bot
+    walls (e.g. Indeed) do not immediately serve a block page."""
+    captured = {}
+
+    class Response:
+        status_code = 200
+        text = "<html><title>Role</title><h1>Role</h1></html>"
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return _client_for_response(Response())
+
+    monkeypatch.setattr(main_mod.httpx, "Client", fake_client)
+    main_mod._scrape_url("https://93.184.216.34/jobs/1")
+
+    headers = captured.get("headers", {})
+    assert "User-Agent" in headers
+    assert "Chrome" in headers["User-Agent"]
+    assert headers.get("Accept-Language", "").startswith("en")
+
+
+def test_scrape_url_falls_back_to_browser_when_blocked(monkeypatch):
+    """When the HTTP fetch is blocked, a successful browser scrape result is
+    used instead of the blocked result."""
+
+    class Response:
+        status_code = 403
+        text = "<html><title>Blocked - Indeed.com</title></html>"
+
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_with_browser",
+        lambda url: {
+            "url": url,
+            "title": "Software Engineer - ACME",
+            "h1": "Software Engineer",
+            "company": "ACME",
+        },
+    )
+
+    result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked")
+
+    assert "blocked" not in result
+    assert result["company"] == "ACME"
+    assert result["h1"] == "Software Engineer"
+
+
+def test_scrape_with_browser_returns_none_when_still_blocked(monkeypatch):
+    """If the rendered page still looks blocked, the browser fallback returns
+    None so the caller keeps the original blocked result."""
+
+    class _Driver:
+        page_source = "<html><title>Access Denied</title></html>"
+
+        def set_page_load_timeout(self, *_):
+            pass
+
+        def get(self, *_):
+            pass
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
+    monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
+    monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
+
+    assert _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked") is None
+
+
+def test_scrape_with_browser_parses_rendered_html(monkeypatch):
+    """A successful browser render is parsed with the standard pipeline."""
+
+    class _Driver:
+        page_source = (
+            "<html><head><title>Head of AI - ACME</title>"
+            '<meta property="og:site_name" content="ACME"></head>'
+            "<body><h1>Head of AI</h1></body></html>"
+        )
+
+        def set_page_load_timeout(self, *_):
+            pass
+
+        def get(self, *_):
+            pass
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
+    monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
+    monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
+
+    result = _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/1")
+
+    assert result is not None
+    assert result["h1"] == "Head of AI"
+    assert result["company"] == "ACME"
 
 
 def test_scrape_url_marks_403_and_429_blocked_regardless_of_content(monkeypatch):

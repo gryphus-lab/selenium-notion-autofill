@@ -10,6 +10,7 @@ import shutil
 import socket
 import ssl
 import sys
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -637,6 +638,33 @@ class _PinnedTransport(httpx.BaseTransport):
         self.pool.close()
 
 
+# Realistic browser headers so soft anti-bot walls (e.g. Indeed) don't serve a
+# block page to a bare HTTP client. Kept in one place for reuse/testing.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
+    # Request identity encoding: the pinned transport does not auto-decompress,
+    # so asking for gzip/br would yield unparseable bytes.
+    "Accept-Encoding": "identity",
+    "Sec-Ch-Ua": '"Chromium";v="125", "Not.A/Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
 def _fetch_url(url: str, address: str) -> tuple[httpx.Response, str]:
     hostname = urlparse(url).hostname
     if hostname is None:
@@ -646,6 +674,7 @@ def _fetch_url(url: str, address: str) -> tuple[httpx.Response, str]:
         timeout=15,
         follow_redirects=False,
         trust_env=False,
+        headers=BROWSER_HEADERS,
     ) as client:
         response = client.get(url)
     return response, response.text or ""
@@ -700,7 +729,98 @@ def _scrape_url(url: str) -> dict:
         result["blocked"] = BLOCKED_PAGE_MESSAGE
     else:
         result["blocked"] = f"The website returned HTTP {status_code}"
+
+    # Bypass: if the lightweight HTTP fetch was blocked, retry with a real
+    # headless browser, which executes JS and passes most anti-bot walls
+    # (e.g. Indeed / Cloudflare). Only attempted for blocks, and only if a
+    # browser is available; failures fall back to the original blocked result.
+    if result.get("blocked"):
+        browser_result = _scrape_with_browser(url)
+        if browser_result is not None:
+            return browser_result
     return result
+
+
+def _scrape_with_browser(url: str) -> dict | None:
+    """Scrape a URL with a headless Chrome browser to bypass anti-bot blocks.
+
+    Reuses the SSRF validation, then loads the page in Selenium (JS-capable),
+    and parses the rendered HTML with the same BeautifulSoup pipeline. Returns
+    a result dict on success, or None if a browser is unavailable or the page
+    still looks blocked (so the caller keeps the original blocked result).
+    """
+    try:
+        # Re-validate the target (defence in depth: same public-IP guard).
+        _validate_external_url(url)
+    except ValueError:
+        return None
+
+    driver = None
+    try:
+        driver = _create_headless_driver()
+        driver.set_page_load_timeout(30)
+        driver.get(url)
+        time.sleep(2.5)  # allow anti-bot JS challenge to resolve and render
+        html = driver.page_source or ""
+    except Exception as exc:  # noqa: BLE001 - browser fallback is best-effort
+        print(f"   ⚠️  Browser fallback could not fetch {url}: {exc}")
+        return None
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:  # noqa: BLE001
+                pass
+
+    result: dict = {"url": url}
+    try:
+        result = _scrape_with_beautifulsoup(html, result)
+    except Exception:  # noqa: BLE001
+        result = _scrape_with_regex(html, result)
+
+    heading = " ".join(str(result.get(f, "")) for f in ("title", "h1")).lower()
+    if not html.strip() or any(
+        marker in heading
+        for marker in ("access denied", "captcha", "unusual traffic", "robot check")
+    ):
+        return None  # still blocked → let caller keep the original result
+
+    print(f"   🌐 Browser fallback succeeded for {url}")
+    return result
+
+
+def _create_headless_driver():
+    """Create a headless Chrome driver tuned to look like a real browser."""
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(f"--user-agent={BROWSER_HEADERS['User-Agent']}")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+
+    if ChromeDriverManager:
+        service = Service(ChromeDriverManager().install())
+    else:
+        chromedriver_path = shutil.which("chromedriver")
+        if not chromedriver_path:
+            raise RuntimeError(
+                "webdriver_manager not installed and chromedriver not found in PATH."
+            )
+        service = Service(chromedriver_path)
+
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {
+            "source": (
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+        },
+    )
+    return driver
 
 
 def _validate_external_url(url: str) -> str:
