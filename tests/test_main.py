@@ -447,6 +447,20 @@ def test_scrape_url_falls_back_to_browser_when_blocked(monkeypatch):
     assert browser_calls == ["https://93.184.216.34/jobs/blocked"]
 
 
+def test_scrape_url_returns_successful_browser_result(monkeypatch):
+    class Response:
+        status_code = 403
+        text = "<html><title>Blocked</title></html>"
+
+    browser_result = {"url": "https://93.184.216.34/jobs/1", "title": "Role"}
+    monkeypatch.setattr(
+        main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
+    )
+    monkeypatch.setattr(main_mod, "_scrape_with_browser", lambda url: browser_result)
+
+    assert main_mod._scrape_url(browser_result["url"]) == browser_result
+
+
 def test_scrape_with_browser_returns_none_when_still_blocked(monkeypatch):
     """If the rendered page still looks blocked, the browser fallback returns
     None so the caller keeps the original blocked result."""
@@ -467,7 +481,10 @@ def test_scrape_with_browser_returns_none_when_still_blocked(monkeypatch):
     monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
     monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
 
-    assert _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True) is None
+    assert (
+        _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True)
+        is None
+    )
 
 
 def test_scrape_with_browser_returns_none_when_body_is_blocked(monkeypatch):
@@ -487,7 +504,66 @@ def test_scrape_with_browser_returns_none_when_body_is_blocked(monkeypatch):
     monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
     monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
 
-    assert _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True) is None
+    assert (
+        _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True)
+        is None
+    )
+
+
+def test_scrape_with_browser_rejects_invalid_trusted_url(monkeypatch):
+    driver_calls = []
+    monkeypatch.setattr(main_mod, "_create_headless_driver", driver_calls.append)
+
+    assert _REAL_SCRAPE_WITH_BROWSER("http://127.0.0.1", trusted=True) is None
+    assert driver_calls == []
+
+
+def test_scrape_with_browser_returns_none_when_driver_fails_and_quit_fails(
+    monkeypatch,
+):
+    class _Driver:
+        def set_page_load_timeout(self, *_):
+            pass
+
+        def get(self, *_):
+            raise RuntimeError("browser unavailable")
+
+        def quit(self):
+            raise RuntimeError("quit failed")
+
+    monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
+    monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
+
+    assert (
+        _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/1", trusted=True) is None
+    )
+
+
+def test_scrape_with_browser_uses_regex_when_beautifulsoup_fails(monkeypatch):
+    class _Driver:
+        page_source = "<html><title>Role</title><h1>Engineer</h1></html>"
+
+        def set_page_load_timeout(self, *_):
+            pass
+
+        def get(self, *_):
+            pass
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(main_mod, "_validate_external_url", lambda url: "93.184.216.34")
+    monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
+    monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(
+        main_mod,
+        "_scrape_with_beautifulsoup",
+        lambda html, result: (_ for _ in ()).throw(RuntimeError("parser error")),
+    )
+
+    result = _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/1", trusted=True)
+
+    assert result["h1"] == "Engineer"
 
 
 def test_scrape_with_browser_rejects_untrusted_url_before_driver_creation(monkeypatch):
@@ -526,6 +602,76 @@ def test_scrape_with_browser_parses_rendered_html(monkeypatch):
     assert result is not None
     assert result["h1"] == "Head of AI"
     assert result["company"] == "ACME"
+
+
+def test_create_headless_driver_uses_webdriver_manager(monkeypatch):
+    class FakeOptions:
+        def __init__(self):
+            self.arguments = []
+            self.experimental_options = []
+
+        def add_argument(self, argument):
+            self.arguments.append(argument)
+
+        def add_experimental_option(self, name, value):
+            self.experimental_options.append((name, value))
+
+    class FakeManager:
+        def install(self):
+            return "/tmp/managed-chromedriver"
+
+    created = {}
+
+    monkeypatch.setattr(main_mod, "Options", FakeOptions)
+    monkeypatch.setattr(main_mod, "ChromeDriverManager", FakeManager)
+    monkeypatch.setattr(main_mod, "Service", lambda path: path)
+
+    class FakeDriver:
+        def execute_cdp_cmd(self, command, payload):
+            created["cdp"] = (command, payload)
+
+    def fake_chrome(service, options):
+        created["driver"] = (service, options)
+        return FakeDriver()
+
+    monkeypatch.setattr(main_mod.webdriver, "Chrome", fake_chrome)
+
+    driver = main_mod._create_headless_driver()
+
+    assert isinstance(driver, FakeDriver)
+    assert created["driver"][0] == "/tmp/managed-chromedriver"
+    assert "--headless=new" in created["driver"][1].arguments
+    assert created["cdp"][0] == "Page.addScriptToEvaluateOnNewDocument"
+
+
+def test_create_headless_driver_uses_path_when_manager_unavailable(monkeypatch):
+    created = {}
+
+    class FakeOptions:
+        def add_argument(self, argument):
+            pass
+
+        def add_experimental_option(self, name, value):
+            pass
+
+    class FakeDriver:
+        def execute_cdp_cmd(self, command, payload):
+            created["cdp"] = command
+
+    monkeypatch.setattr(main_mod, "Options", FakeOptions)
+    monkeypatch.setattr(main_mod, "ChromeDriverManager", None)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: "/tmp/chromedriver")
+    monkeypatch.setattr(main_mod, "Service", lambda path: path)
+
+    def fake_chrome(service, options):
+        created["service"] = service
+        return FakeDriver()
+
+    monkeypatch.setattr(main_mod.webdriver, "Chrome", fake_chrome)
+
+    assert isinstance(main_mod._create_headless_driver(), FakeDriver)
+    assert created["service"] == "/tmp/chromedriver"
+    assert created["cdp"] == "Page.addScriptToEvaluateOnNewDocument"
 
 
 def test_scrape_url_marks_403_and_429_blocked_regardless_of_content(monkeypatch):
