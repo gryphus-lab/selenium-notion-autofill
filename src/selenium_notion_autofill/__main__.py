@@ -32,6 +32,7 @@ from selenium_notion_autofill.config import (
     NOTION_PROPERTY_MAP,
     get_database_id,
     get_notion_api_key,
+    is_browser_fallback_enabled,
     validate_property_map,
 )
 
@@ -55,6 +56,8 @@ MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 MAX_REDIRECTS = 5
 NOTION_RICH_TEXT_LIMIT = 2000
 BLOCKED_PAGE_MESSAGE = "The website returned an access-blocked page"
+BLOCKED_HEADING_MARKERS = ("access denied", "captcha", "unusual traffic", "robot check")
+BLOCKED_TEXT_MARKERS = ("access denied", "unusual traffic", "robot check")
 OPTIONAL_CREATE_FIELDS = (
     "Description",
     "Stage",
@@ -638,6 +641,33 @@ class _PinnedTransport(httpx.BaseTransport):
         self.pool.close()
 
 
+# Realistic browser headers so soft anti-bot walls (e.g. Indeed) don't serve a
+# block page to a bare HTTP client. Kept in one place for reuse/testing.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
+    # Request identity encoding: the pinned transport does not auto-decompress,
+    # so asking for gzip/br would yield unparseable bytes.
+    "Accept-Encoding": "identity",
+    "Sec-Ch-Ua": '"Chromium";v="125", "Not.A/Brand";v="24"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
 def _fetch_url(url: str, address: str) -> tuple[httpx.Response, str]:
     hostname = urlparse(url).hostname
     if hostname is None:
@@ -647,6 +677,7 @@ def _fetch_url(url: str, address: str) -> tuple[httpx.Response, str]:
         timeout=15,
         follow_redirects=False,
         trust_env=False,
+        headers=BROWSER_HEADERS,
     ) as client:
         response = client.get(url)
     return response, response.text or ""
@@ -656,6 +687,26 @@ def _redirect_location(response: httpx.Response) -> str | None:
     if 300 <= response.status_code < 400:
         return getattr(response, "headers", {}).get("location")
     return None
+
+
+def _has_blocked_content(result: dict) -> bool:
+    heading_fields = " ".join(
+        str(result.get(field, "")) for field in ("title", "h1")
+    ).lower()
+    text_fields = str(result.get("text", ""))[:500].lower()
+    return any(marker in heading_fields for marker in BLOCKED_HEADING_MARKERS) or any(
+        marker in text_fields for marker in BLOCKED_TEXT_MARKERS
+    )
+
+
+def _mark_blocked_result(result: dict, status_code: int) -> None:
+    if 200 <= status_code < 300:
+        if _has_blocked_content(result):
+            result["blocked"] = BLOCKED_PAGE_MESSAGE
+    elif status_code in {403, 429}:
+        result["blocked"] = BLOCKED_PAGE_MESSAGE
+    else:
+        result["blocked"] = f"The website returned HTTP {status_code}"
 
 
 def _scrape_url(url: str) -> dict:
@@ -683,25 +734,101 @@ def _scrape_url(url: str) -> dict:
     except Exception:
         result = _scrape_with_regex(text, result)
 
-    status_code = resp.status_code
-    if 200 <= status_code < 300:
-        heading_fields = " ".join(
-            str(result.get(field, "")) for field in ("title", "h1")
-        ).lower()
-        text_fields = str(result.get("text", ""))[:500].lower()
-        if any(
-            marker in heading_fields
-            for marker in ("access denied", "captcha", "unusual traffic", "robot check")
-        ) or any(
-            marker in text_fields
-            for marker in ("access denied", "unusual traffic", "robot check")
-        ):
-            result["blocked"] = BLOCKED_PAGE_MESSAGE
-    elif status_code in {403, 429}:
-        result["blocked"] = BLOCKED_PAGE_MESSAGE
-    else:
-        result["blocked"] = f"The website returned HTTP {status_code}"
+    _mark_blocked_result(result, resp.status_code)
+
+    # The browser retry is opt-in because it requires a separately enforced
+    # egress boundary for safe navigation.
+    if result.get("blocked") and is_browser_fallback_enabled():
+        browser_result = _scrape_with_browser(url, trusted=True)
+        if browser_result is not None:
+            return browser_result
     return result
+
+
+def _scrape_with_browser(url: str, *, trusted: bool = False) -> dict | None:
+    """Scrape a URL with a headless Chrome browser to bypass anti-bot blocks.
+
+    Browser navigation cannot enforce the HTTP scraper's per-hop SSRF checks.
+    It is therefore disabled for untrusted URLs; trusted callers must establish
+    an egress boundary before opting in. Returns a result dict on success, or
+    None if the URL is untrusted, a browser is unavailable, or the page still
+    looks blocked.
+    """
+    if not trusted:
+        return None
+
+    try:
+        # Re-validate the target (defence in depth: same public-IP guard).
+        _validate_external_url(url)
+    except ValueError:
+        return None
+
+    driver = None
+    try:
+        driver = _create_headless_driver()
+        driver.set_page_load_timeout(30)
+        driver.get(url)
+        WebDriverWait(driver, 10).until(
+            lambda browser: (
+                browser.execute_script("return document.readyState") == "complete"
+            )
+        )
+        html = driver.page_source or ""
+    except Exception as exc:  # noqa: BLE001 - browser fallback is best-effort
+        print(f"   ⚠️  Browser fallback could not fetch {url}: {exc}")
+        return None
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:  # noqa: BLE001
+                pass
+
+    result: dict = {"url": url}
+    try:
+        result = _scrape_with_beautifulsoup(html, result)
+    except Exception:  # noqa: BLE001
+        result = _scrape_with_regex(html, result)
+
+    if not html.strip() or _has_blocked_content(result):
+        return None  # still blocked → let caller keep the original result
+
+    print(f"   🌐 Browser fallback succeeded for {url}")
+    return result
+
+
+def _create_headless_driver():
+    """Create a headless Chrome driver tuned to look like a real browser."""
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(f"--user-agent={BROWSER_HEADERS['User-Agent']}")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+
+    if ChromeDriverManager:
+        service = Service(ChromeDriverManager().install())
+    else:
+        chromedriver_path = shutil.which("chromedriver")
+        if not chromedriver_path:
+            raise RuntimeError(
+                "webdriver_manager not installed and chromedriver not found in PATH."
+            )
+        service = Service(chromedriver_path)
+
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {
+            "source": (
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+        },
+    )
+    return driver
 
 
 def _validate_external_url(url: str) -> str:
@@ -781,8 +908,7 @@ def _resolve_company_name(
     return hostname
 
 
-# Fields that must always be present on a newly created entry, regardless of
-# whether they appear in FIELD_SELECTORS or the property map.
+# Stage is required for every newly created application.
 _ALWAYS_KEEP_CREATE_FIELDS = ("Stage",)
 
 

@@ -90,3 +90,13 @@ if NOTION_PROPERTY_MAP_JSON:
 
 def get_website_url() -> str:
     return _required_setting("WEBSITE_URL")
+
+
+def is_browser_fallback_enabled() -> bool:
+    """Return whether the opt-in browser fallback is enabled."""
+    return os.environ.get("ENABLE_BROWSER_FALLBACK", "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
