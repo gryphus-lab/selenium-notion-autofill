@@ -56,6 +56,8 @@ MAX_DOCUMENT_BYTES = 5 * 1024 * 1024
 MAX_REDIRECTS = 5
 NOTION_RICH_TEXT_LIMIT = 2000
 BLOCKED_PAGE_MESSAGE = "The website returned an access-blocked page"
+BLOCKED_HEADING_MARKERS = ("access denied", "captcha", "unusual traffic", "robot check")
+BLOCKED_TEXT_MARKERS = ("access denied", "unusual traffic", "robot check")
 OPTIONAL_CREATE_FIELDS = (
     "Description",
     "Stage",
@@ -687,6 +689,26 @@ def _redirect_location(response: httpx.Response) -> str | None:
     return None
 
 
+def _has_blocked_content(result: dict) -> bool:
+    heading_fields = " ".join(
+        str(result.get(field, "")) for field in ("title", "h1")
+    ).lower()
+    text_fields = str(result.get("text", ""))[:500].lower()
+    return any(marker in heading_fields for marker in BLOCKED_HEADING_MARKERS) or any(
+        marker in text_fields for marker in BLOCKED_TEXT_MARKERS
+    )
+
+
+def _mark_blocked_result(result: dict, status_code: int) -> None:
+    if 200 <= status_code < 300:
+        if _has_blocked_content(result):
+            result["blocked"] = BLOCKED_PAGE_MESSAGE
+    elif status_code in {403, 429}:
+        result["blocked"] = BLOCKED_PAGE_MESSAGE
+    else:
+        result["blocked"] = f"The website returned HTTP {status_code}"
+
+
 def _scrape_url(url: str) -> dict:
     """Scrape a URL to extract title, description and first h1."""
     current_url = url
@@ -712,24 +734,7 @@ def _scrape_url(url: str) -> dict:
     except Exception:
         result = _scrape_with_regex(text, result)
 
-    status_code = resp.status_code
-    if 200 <= status_code < 300:
-        heading_fields = " ".join(
-            str(result.get(field, "")) for field in ("title", "h1")
-        ).lower()
-        text_fields = str(result.get("text", ""))[:500].lower()
-        if any(
-            marker in heading_fields
-            for marker in ("access denied", "captcha", "unusual traffic", "robot check")
-        ) or any(
-            marker in text_fields
-            for marker in ("access denied", "unusual traffic", "robot check")
-        ):
-            result["blocked"] = BLOCKED_PAGE_MESSAGE
-    elif status_code in {403, 429}:
-        result["blocked"] = BLOCKED_PAGE_MESSAGE
-    else:
-        result["blocked"] = f"The website returned HTTP {status_code}"
+    _mark_blocked_result(result, resp.status_code)
 
     # Bypass: if the lightweight HTTP fetch was blocked, retry with a real
     # headless browser, which executes JS and passes most anti-bot walls
@@ -742,14 +747,18 @@ def _scrape_url(url: str) -> dict:
     return result
 
 
-def _scrape_with_browser(url: str) -> dict | None:
+def _scrape_with_browser(url: str, *, trusted: bool = False) -> dict | None:
     """Scrape a URL with a headless Chrome browser to bypass anti-bot blocks.
 
-    Reuses the SSRF validation, then loads the page in Selenium (JS-capable),
-    and parses the rendered HTML with the same BeautifulSoup pipeline. Returns
-    a result dict on success, or None if a browser is unavailable or the page
-    still looks blocked (so the caller keeps the original blocked result).
+    Browser navigation cannot enforce the HTTP scraper's per-hop SSRF checks.
+    It is therefore disabled for untrusted URLs; trusted callers must establish
+    an egress boundary before opting in. Returns a result dict on success, or
+    None if the URL is untrusted, a browser is unavailable, or the page still
+    looks blocked.
     """
+    if not trusted:
+        return None
+
     try:
         # Re-validate the target (defence in depth: same public-IP guard).
         _validate_external_url(url)
@@ -779,11 +788,8 @@ def _scrape_with_browser(url: str) -> dict | None:
     except Exception:  # noqa: BLE001
         result = _scrape_with_regex(html, result)
 
-    heading = " ".join(str(result.get(f, "")) for f in ("title", "h1")).lower()
-    if not html.strip() or any(
-        marker in heading
-        for marker in ("access denied", "captcha", "unusual traffic", "robot check")
-    ):
+    heading = " ".join(str(result.get(field, "")) for field in ("title", "h1")).lower()
+    if not html.strip() or any(marker in heading for marker in BLOCKED_HEADING_MARKERS):
         return None  # still blocked → let caller keep the original result
 
     print(f"   🌐 Browser fallback succeeded for {url}")

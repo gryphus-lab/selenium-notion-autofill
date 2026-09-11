@@ -429,8 +429,7 @@ def test_scrape_url_sends_browser_headers(monkeypatch):
 
 
 def test_scrape_url_falls_back_to_browser_when_blocked(monkeypatch):
-    """When the HTTP fetch is blocked, a successful browser scrape result is
-    used instead of the blocked result."""
+    """Untrusted blocked URLs do not bypass SSRF checks through Selenium."""
 
     class Response:
         status_code = 403
@@ -439,22 +438,13 @@ def test_scrape_url_falls_back_to_browser_when_blocked(monkeypatch):
     monkeypatch.setattr(
         main_mod.httpx, "Client", lambda **kwargs: _client_for_response(Response())
     )
-    monkeypatch.setattr(
-        main_mod,
-        "_scrape_with_browser",
-        lambda url: {
-            "url": url,
-            "title": "Software Engineer - ACME",
-            "h1": "Software Engineer",
-            "company": "ACME",
-        },
-    )
+    browser_calls = []
+    monkeypatch.setattr(main_mod, "_scrape_with_browser", browser_calls.append)
 
     result = main_mod._scrape_url("https://93.184.216.34/jobs/blocked")
 
-    assert "blocked" not in result
-    assert result["company"] == "ACME"
-    assert result["h1"] == "Software Engineer"
+    assert result["blocked"] == main_mod.BLOCKED_PAGE_MESSAGE
+    assert browser_calls == ["https://93.184.216.34/jobs/blocked"]
 
 
 def test_scrape_with_browser_returns_none_when_still_blocked(monkeypatch):
@@ -477,7 +467,15 @@ def test_scrape_with_browser_returns_none_when_still_blocked(monkeypatch):
     monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
     monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
 
-    assert _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked") is None
+    assert _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/blocked", trusted=True) is None
+
+
+def test_scrape_with_browser_rejects_untrusted_url_before_driver_creation(monkeypatch):
+    driver_calls = []
+    monkeypatch.setattr(main_mod, "_create_headless_driver", driver_calls.append)
+
+    assert _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/1") is None
+    assert driver_calls == []
 
 
 def test_scrape_with_browser_parses_rendered_html(monkeypatch):
@@ -503,7 +501,7 @@ def test_scrape_with_browser_parses_rendered_html(monkeypatch):
     monkeypatch.setattr(main_mod, "_create_headless_driver", lambda: _Driver())
     monkeypatch.setattr(main_mod.time, "sleep", lambda *_: None)
 
-    result = _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/1")
+    result = _REAL_SCRAPE_WITH_BROWSER("https://93.184.216.34/jobs/1", trusted=True)
 
     assert result is not None
     assert result["h1"] == "Head of AI"
